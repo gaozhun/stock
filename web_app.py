@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Web应用界面
-使用Streamlit构建的交互式回测界面
+Web应用界面 - 重构版本
+使用Streamlit构建的交互式回测界面，支持每只股票独立的策略配置
 """
 
 import streamlit as st
@@ -12,15 +12,14 @@ import plotly.graph_objects as go
 import plotly.express as px
 import sys
 import os
+from typing import Dict, List, Optional, Tuple
 
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from data_handler import DataHandler
-from strategies import StrategyFactory
+from stock_strategy import Stock, Portfolio, Strategy, SignalType
 from backtest_engine import BacktestEngine
-from performance import PerformanceAnalyzer
-from visualization import Visualizer
 from config import WEB_CONFIG
 
 
@@ -35,6 +34,26 @@ st.set_page_config(
 # 自定义CSS
 st.markdown("""
 <style>
+    .stock-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 5px solid #1f77b4;
+        margin-bottom: 1rem;
+    }
+    .strategy-card {
+        background-color: #ffffff;
+        padding: 0.5rem;
+        border-radius: 0.25rem;
+        border: 1px solid #e0e0e0;
+        margin-bottom: 0.5rem;
+    }
+    .buy-strategy {
+        border-left: 3px solid #2ca02c;
+    }
+    .sell-strategy {
+        border-left: 3px solid #d62728;
+    }
     .metric-card {
         background-color: #f0f2f6;
         padding: 1rem;
@@ -60,31 +79,1004 @@ def get_stock_data(symbols, start_date, end_date):
     data_handler = DataHandler()
     return data_handler.get_multiple_stocks(symbols, start_date, end_date)
 
-
 @st.cache_data
-def run_backtest_cached(symbols, strategy_name, strategy_params, 
-                       start_date, end_date, initial_capital, benchmark):
-    """缓存的回测函数"""
-    strategy = StrategyFactory.create_strategy(strategy_name, strategy_params)
-    engine = BacktestEngine(initial_capital=initial_capital)
+def get_benchmark_data(symbol: str, start_date: str, end_date: str):
+    """获取基准数据"""
+    data_handler = DataHandler()
+    return data_handler.get_benchmark_data(start_date, end_date, symbol)
+
+# 移除缓存装饰器，确保每次都使用最新的Portfolio对象
+def run_backtest_cached(_portfolio: Portfolio,
+                       symbols: List[str], start_date: str, end_date: str):
+    """回测函数"""
+    engine = BacktestEngine()
     
-    results = engine.run_backtest(
+    # 打印调试信息
+    print(f"运行回测: 股票数量={len(symbols)}, 开始日期={start_date}, 结束日期={end_date}")
+    print(f"Portfolio对象中的股票数量: {len(_portfolio.stocks)}")
+    for symbol, stock in _portfolio.stocks.items():
+        print(f"股票 {symbol}: 买入策略={len(stock.buy_strategies)}, 卖出策略={len(stock.sell_strategies)}")
+    
+    results = engine.run_portfolio_backtest(
+        portfolio=_portfolio,
         symbols=symbols,
-        strategy=strategy,
+        start_date=start_date,
+        end_date=end_date
+    )
+    
+    return results
+
+def run_benchmark_backtest(symbol: str, start_date: str, end_date: str, initial_capital: int):
+    """运行基准回测"""
+    engine = BacktestEngine()
+    benchmark_portfolio = Portfolio()
+    
+    # 为每个股票创建买入并持有策略
+    benchmark_portfolio.add_stock(symbol, initial_investment=initial_capital, max_investment=initial_capital)
+    
+    benchmark_data = get_benchmark_data(symbol, start_date, end_date)
+    # 获取结果
+    results = engine.run_portfolio_backtest(
+        portfolio=benchmark_portfolio,
+        symbols=[symbol],
         start_date=start_date,
         end_date=end_date,
-        benchmark=benchmark
+        custom_data={symbol: benchmark_data}
+    )
+    
+    return results
+
+def run_buy_hold_backtest(symbols: List[str], start_date: str, end_date: str, initial_capitals: List[int]):
+    """运行买入并持有策略回测"""
+    engine = BacktestEngine()
+    buy_hold_portfolio = Portfolio()
+    
+    # 为每个股票创建买入并持有策略
+    for symbol, initial_capital in zip(symbols, initial_capitals):
+        # 平均分配初始资金
+        stock_initial_investment = initial_capital
+        buy_hold_portfolio.add_stock(symbol, initial_investment=stock_initial_investment, max_investment=stock_initial_investment)
+    
+    # 获取结果
+    results = engine.run_portfolio_backtest(
+        portfolio=buy_hold_portfolio,
+        symbols=symbols,
+        start_date=start_date,
+        end_date=end_date
     )
     
     return results
 
 
+def render_strategy_params(stock_code: str, strategy_name: str, signal_type: SignalType) -> Dict:
+    """
+    渲染策略参数界面
+    
+    Args:
+        stock_code: 股票代码
+        strategy_name: 策略名称
+        signal_type: 信号类型（买入/卖出）
+        
+    Returns:
+        策略参数字典
+    """
+    strategy_params = {}
+    
+    if strategy_name == 'time_based':
+        st.subheader("⏰ 时间条件单参数")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            frequency = st.selectbox(
+                "交易频率",
+                options=['daily', 'weekly', 'monthly'],
+                format_func=lambda x: {'daily': '每日', 'weekly': '每周', 'monthly': '每月'}.get(x, x),
+                key=f"frequency_{stock_code}_{signal_type.value}_{strategy_name}"
+            )
+            strategy_params['frequency'] = frequency
+        
+        with col2:
+            if frequency in ['weekly', 'monthly']:
+                trading_day = st.slider(
+                    "第几个交易日", 
+                    1, 10, 1,
+                    help="选择每周/每月的第几个交易日进行交易",
+                    key=f"trading_day_{stock_code}_{signal_type.value}_{strategy_name}"
+                )
+                strategy_params['trading_day'] = trading_day
+        
+        # 交易金额/数量设置
+        col1, col2 = st.columns(2)
+        with col1:
+            trade_mode = st.radio(
+                "交易模式",
+                ["按金额", "按股数"],
+                horizontal=True,
+                key=f"trade_mode_{stock_code}_{signal_type.value}_{strategy_name}"
+            )
+        
+        with col2:
+            if trade_mode == "按金额":
+                trade_amount = st.number_input(
+                    "每次交易金额 (¥)", 
+                    min_value=1000, max_value=100000, 
+                    value=10000, step=1000,
+                    key=f"trade_amount_{stock_code}_{signal_type.value}_{strategy_name}"
+                )
+                strategy_params['trade_amount'] = trade_amount
+                strategy_params['trade_shares'] = None
+            else:
+                trade_shares = st.number_input(
+                    "每次交易股数", 
+                    min_value=100, max_value=10000, 
+                    value=1000, step=100,
+                    key=f"trade_shares_{stock_code}_{signal_type.value}_{strategy_name}"
+                )
+                strategy_params['trade_shares'] = trade_shares
+                strategy_params['trade_amount'] = None
+    
+    elif strategy_name == 'macd_pattern':
+        st.subheader("📊 MACD形态参数")
+        
+        # MACD基础参数
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            fast_period = st.slider("快线周期", 5, 20, 12, key=f"fast_period_{stock_code}_{signal_type.value}_{strategy_name}")
+            strategy_params['fast_period'] = fast_period
+        
+        with col2:
+            slow_period = st.slider("慢线周期", 20, 50, 26, key=f"slow_period_{stock_code}_{signal_type.value}_{strategy_name}")
+            strategy_params['slow_period'] = slow_period
+        
+        with col3:
+            signal_period = st.slider("信号线周期", 5, 20, 9, key=f"signal_period_{stock_code}_{signal_type.value}_{strategy_name}")
+            strategy_params['signal_period'] = signal_period
+        
+        # 形态选择
+        st.write(f"**{'买入' if signal_type == SignalType.BUY else '卖出'}形态选择**")
+        patterns = []
+        col1, col2, col3 = st.columns(3)
+        
+        if signal_type == SignalType.BUY:
+            with col1:
+                if st.checkbox("金叉", value=True, key=f"golden_cross_{stock_code}_{signal_type.value}_{strategy_name}"):
+                    patterns.append('golden_cross')
+            
+            with col2:
+                if st.checkbox("二次金叉", value=False, key=f"double_golden_cross_{stock_code}_{signal_type.value}_{strategy_name}"):
+                    patterns.append('double_golden_cross')
+            
+            with col3:
+                if st.checkbox("底背离", value=False, key=f"bullish_divergence_{stock_code}_{signal_type.value}_{strategy_name}"):
+                    patterns.append('bullish_divergence')
+            
+            strategy_params['buy_patterns'] = patterns
+            strategy_params['sell_patterns'] = []
+        else:
+            with col1:
+                if st.checkbox("死叉", value=True, key=f"death_cross_{stock_code}_{signal_type.value}_{strategy_name}"):
+                    patterns.append('death_cross')
+            
+            with col2:
+                if st.checkbox("二次死叉", value=False, key=f"double_death_cross_{stock_code}_{signal_type.value}_{strategy_name}"):
+                    patterns.append('double_death_cross')
+            
+            with col3:
+                if st.checkbox("顶背离", value=False, key=f"bearish_divergence_{stock_code}_{signal_type.value}_{strategy_name}"):
+                    patterns.append('bearish_divergence')
+            
+            strategy_params['buy_patterns'] = []
+            strategy_params['sell_patterns'] = patterns
+        
+        # 检测参数
+        col1, col2 = st.columns(2)
+        with col1:
+            divergence_lookback = st.slider("背离检测回望期", 10, 50, 20, key=f"divergence_lookback_{stock_code}_{signal_type.value}_{strategy_name}")
+            strategy_params['divergence_lookback'] = divergence_lookback
+        
+        with col2:
+            double_cross_lookback = st.slider("二次交叉检测回望期", 5, 30, 10, key=f"double_cross_lookback_{stock_code}_{signal_type.value}_{strategy_name}")
+            strategy_params['double_cross_lookback'] = double_cross_lookback
+        
+        # 交易金额/数量设置
+        col1, col2 = st.columns(2)
+        with col1:
+            trade_mode = st.radio(
+                "交易模式",
+                ["按金额", "按股数"],
+                horizontal=True,
+                key=f"trade_mode_{stock_code}_{signal_type.value}_{strategy_name}"
+            )
+        
+        with col2:
+            if trade_mode == "按金额":
+                trade_amount = st.number_input(
+                    "每次交易金额 (¥)", 
+                    min_value=1000, max_value=100000, 
+                    value=10000, step=1000,
+                    key=f"trade_amount_{stock_code}_{signal_type.value}_{strategy_name}"
+                )
+                strategy_params['trade_amount'] = trade_amount
+                strategy_params['trade_shares'] = None
+            else:
+                trade_shares = st.number_input(
+                    "每次交易股数", 
+                    min_value=100, max_value=10000, 
+                    value=1000, step=100,
+                    key=f"trade_shares_{stock_code}_{signal_type.value}_{strategy_name}"
+                )
+                strategy_params['trade_shares'] = trade_shares
+                strategy_params['trade_amount'] = None
+    
+    elif strategy_name == 'ma_touch':
+        st.subheader("📈 均线触碰参数")
+        
+        # 均线周期选择
+        st.write("**均线周期选择**")
+        ma_periods = []
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            if st.checkbox("5日均线", value=True, key=f"ma_5_{stock_code}_{signal_type.value}_{strategy_name}"):
+                ma_periods.append(5)
+        
+        with col2:
+            if st.checkbox("10日均线", value=True, key=f"ma_10_{stock_code}_{signal_type.value}_{strategy_name}"):
+                ma_periods.append(10)
+        
+        with col3:
+            if st.checkbox("20日均线", value=True, key=f"ma_20_{stock_code}_{signal_type.value}_{strategy_name}"):
+                ma_periods.append(20)
+        
+        with col4:
+            if st.checkbox("30日均线", value=False, key=f"ma_30_{stock_code}_{signal_type.value}_{strategy_name}"):
+                ma_periods.append(30)
+        
+        with col5:
+            if st.checkbox("60日均线", value=False, key=f"ma_60_{stock_code}_{signal_type.value}_{strategy_name}"):
+                ma_periods.append(60)
+        
+        strategy_params['ma_periods'] = ma_periods
+        
+        # 触碰阈值
+        touch_threshold = st.slider(
+            "触碰阈值 (%)", 
+            0.1, 5.0, 2.0, 0.1,
+            help="价格与均线的距离百分比，越小越精确",
+            key=f"touch_threshold_{stock_code}_{signal_type.value}_{strategy_name}"
+        )
+        strategy_params['touch_threshold'] = touch_threshold / 100.0
+        
+        # 交易行为设置
+        if signal_type == SignalType.BUY:
+            strategy_params['buy_on_touch'] = True
+            strategy_params['sell_on_touch'] = False
+        else:
+            strategy_params['buy_on_touch'] = False
+            strategy_params['sell_on_touch'] = True
+        
+        # 交易金额/数量设置
+        col1, col2 = st.columns(2)
+        with col1:
+            trade_mode = st.radio(
+                "交易模式",
+                ["按金额", "按股数"],
+                horizontal=True,
+                key=f"trade_mode_{stock_code}_{signal_type.value}_{strategy_name}"
+            )
+        
+        with col2:
+            if trade_mode == "按金额":
+                trade_amount = st.number_input(
+                    "每次交易金额 (¥)", 
+                    min_value=1000, max_value=100000, 
+                    value=10000, step=1000,
+                    key=f"trade_amount_{stock_code}_{signal_type.value}_{strategy_name}"
+                )
+                strategy_params['trade_amount'] = trade_amount
+                strategy_params['trade_shares'] = None
+            else:
+                trade_shares = st.number_input(
+                    "每次交易股数", 
+                    min_value=100, max_value=10000, 
+                    value=1000, step=100,
+                    key=f"trade_shares_{stock_code}_{signal_type.value}_{strategy_name}"
+                )
+                strategy_params['trade_shares'] = trade_shares
+                strategy_params['trade_amount'] = None
+    
+    return strategy_params
+
+def render_stock_strategy_card(stock_code: str, portfolio: Portfolio):
+    """渲染单只股票的策略卡片"""
+    with st.container():
+        st.markdown(f"""
+        <div class="stock-card">
+            <h4>{stock_code}</h4>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # 初始持仓金额输入框
+        initial_investment = st.number_input(
+            "初始持仓金额 (¥)",  # 明确单位为人民币
+            min_value=0,  # 允许初始投资金额为零
+            value=int(portfolio.stocks[stock_code].initial_investment),
+            step=1000,
+            key=f"initial_investment_{stock_code}"
+        )
+        portfolio.update_stock_investment(stock_code, initial_investment)
+        
+        # 最大投资资金输入框
+        max_investment = st.number_input(
+            "最大投资资金 (¥)",
+            min_value=1000,
+            value=int(portfolio.stocks[stock_code].max_investment),
+            step=1000,
+            key=f"max_investment_{stock_code}"
+        )
+        portfolio.update_stock_max_investment(stock_code, max_investment)
+        
+        # 添加策略按钮
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            strategy_type = st.selectbox(
+                "选择策略类型",
+                options=['time_based', 'macd_pattern', 'ma_touch'],
+                format_func=lambda x: {'time_based': '时间条件单', 'macd_pattern': 'MACD形态', 'ma_touch': '均线触碰'}.get(x, x),
+                key=f"strategy_type_{stock_code}"
+            )
+        
+        with col2:
+            signal_type = st.selectbox(
+                "信号类型",
+                options=[SignalType.BUY, SignalType.SELL],
+                format_func=lambda x: "买入" if x == SignalType.BUY else "卖出",
+                key=f"signal_type_{stock_code}"
+            )
+        
+        # 策略参数
+        strategy_params = render_strategy_params(stock_code, strategy_type, signal_type)
+        
+        # 添加策略按钮
+        if st.button("添加策略", key=f"add_strategy_{stock_code}"):
+            strategy = Strategy(
+                name=f"{strategy_type}_{signal_type.value}_{len(portfolio.stocks[stock_code].buy_strategies + portfolio.stocks[stock_code].sell_strategies)}",
+                type=strategy_type,
+                signal_type=signal_type,
+                params=strategy_params
+            )
+            # 确保添加策略直接修改session_state中的portfolio
+            portfolio.add_strategy(stock_code, strategy)
+            print(f"✅ 策略 {strategy.name} {strategy.type} {strategy.signal_type} 添加成功！")
+            print(portfolio.stocks[stock_code].buy_strategies)
+            print(portfolio.stocks[stock_code].sell_strategies)
+            st.success(f"✅ 策略 {strategy.name} 添加成功！")
+            # 强制页面重新加载
+            st.rerun()
+        
+        # 显示已添加的策略
+        if stock_code in portfolio.stocks:
+            stock = portfolio.stocks[stock_code]
+            for i, strategy in enumerate(stock.buy_strategies + stock.sell_strategies):
+                if not strategy.enabled:
+                    continue
+                with st.container():
+                    st.markdown(f"""
+                    <div class="strategy-card {'buy-strategy' if strategy.signal_type == SignalType.BUY else 'sell-strategy'}">
+                        <h4>{strategy.name} ({'买入' if strategy.signal_type == SignalType.BUY else '卖出'})</h4>
+                        <p>{str(strategy.params)}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # 删除策略按钮
+                    if st.button("删除策略", key=f"delete_strategy_{stock_code}_{i}"):
+                        # 保存策略名称和类型，以便在回调中使用
+                        strategy.enabled = False
+                        st.success(f"✅ 策略 {strategy.name} 删除成功！")
+                        # 强制页面重新加载
+                        st.rerun()
+
+def display_results(results):
+    """显示回测结果"""
+    st.subheader("回测结果")
+    # 显示收益分析部分
+    st.subheader("收益分析")
+    
+    # 创建两列布局
+    col1, col2 = st.columns(2)
+    
+    # 第一列显示基本收益信息
+    with col1:
+        st.write("总初始资金: ¥{:,.2f}".format(results['initial_capital']))
+        st.write("最终资产价值: ¥{:,.2f}".format(results['final_value']))
+        st.write("总收益率: {:.2%}".format(results['total_return']))
+        
+        # 直接使用回测引擎计算的年化收益率
+        if 'annualized_return' in results:
+            st.write("年化收益率: {:.2%}".format(results['annualized_return']))
+
+
+    
+    # 第二列显示风险指标
+    with col2:
+        # 直接使用回测引擎计算的风险指标
+        if 'max_drawdown' in results:
+            st.write("最大回撤: {:.2%}".format(results['max_drawdown']))
+
+        
+        if 'sharpe_ratio' in results:
+            st.write("夏普比率: {:.2f}".format(results['sharpe_ratio']))
+
+        
+        if 'volatility' in results:
+            st.write("年化波动率: {:.2%}".format(results['volatility']))
+ 
+        
+        if 'max_drawdown_recovery_days' in results:
+            st.write("最大回撤修复天数: {} 天".format(results['max_drawdown_recovery_days']))
+    
+    # 添加与基准和买入持有的对比
+    if st.session_state.get('benchmark_results') and st.session_state.get('buy_hold_results'):
+        st.subheader("策略对比分析")
+        
+        # 创建对比表格
+        comparison_data = []
+        
+        # 策略数据 - 使用原始结果
+        strategy_total_return = results['total_return']
+        strategy_annualized = results.get('annualized_return', 0)
+        strategy_volatility = results.get('volatility', 0)
+        strategy_sharpe = results.get('sharpe_ratio', 0)
+        strategy_max_dd = results.get('max_drawdown', 0)
+        
+        # 基准数据 - 使用独立运行的基准回测结果
+        benchmark_results = st.session_state.benchmark_results
+        benchmark_total_return = benchmark_results['total_return']
+        benchmark_annualized = benchmark_results.get('annualized_return', 0)
+        benchmark_volatility = benchmark_results.get('volatility', 0)
+        benchmark_sharpe = benchmark_results.get('sharpe_ratio', 0)
+        benchmark_max_dd = benchmark_results.get('max_drawdown', 0)
+        
+        # 买入并持有策略数据 - 使用独立运行的买入并持有回测结果
+        buy_hold_results = st.session_state.buy_hold_results
+        buy_hold_total_return = buy_hold_results['total_return']
+        buy_hold_annualized = buy_hold_results.get('annualized_return', 0)
+        buy_hold_volatility = buy_hold_results.get('volatility', 0)
+        buy_hold_sharpe = buy_hold_results.get('sharpe_ratio', 0)
+        buy_hold_max_dd = buy_hold_results.get('max_drawdown', 0)
+        
+        # 获取最大回撤修复天数
+        strategy_recovery_days = results.get('max_drawdown_recovery_days', 0)
+        benchmark_recovery_days = benchmark_results.get('max_drawdown_recovery_days', 0)
+        buy_hold_recovery_days = buy_hold_results.get('max_drawdown_recovery_days', 0)
+        
+        # 添加数据到对比表
+        comparison_data.append({
+            '策略': '回测策略',
+            '总收益率': f"{strategy_total_return:.2%}",
+            '年化收益率': f"{strategy_annualized:.2%}",
+            '年化波动率': f"{strategy_volatility:.2%}",
+            '夏普比率': f"{strategy_sharpe:.2f}",
+            '最大回撤': f"{strategy_max_dd:.2%}",
+            '回撤修复天数': f"{strategy_recovery_days}"
+        })
+        
+        comparison_data.append({
+            '策略': st.session_state.get('benchmark_name', st.session_state.benchmark_symbol),
+            '总收益率': f"{benchmark_total_return:.2%}",
+            '年化收益率': f"{benchmark_annualized:.2%}",
+            '年化波动率': f"{benchmark_volatility:.2%}",
+            '夏普比率': f"{benchmark_sharpe:.2f}",
+            '最大回撤': f"{benchmark_max_dd:.2%}",
+            '回撤修复天数': f"{benchmark_recovery_days}"
+        })
+        
+        comparison_data.append({
+            '策略': '买入并持有',
+            '总收益率': f"{buy_hold_total_return:.2%}",
+            '年化收益率': f"{buy_hold_annualized:.2%}",
+            '年化波动率': f"{buy_hold_volatility:.2%}",
+            '夏普比率': f"{buy_hold_sharpe:.2f}",
+            '最大回撤': f"{buy_hold_max_dd:.2%}",
+            '回撤修复天数': f"{buy_hold_recovery_days}"
+        })
+        
+        # 显示对比表格
+        comparison_df = pd.DataFrame(comparison_data)
+        st.table(comparison_df)
+    # 显示交易记录
+    st.subheader("交易记录")
+    if results['trades']:
+        # 直接显示原始交易记录
+        st.write(f"交易记录总数: {len(results['trades'])}")
+    
+        # 创建交易数据框
+        trades_df = pd.DataFrame(results['trades'])
+        
+        # 重命名列
+        trades_df.rename(columns={
+            'date': '日期',
+            'symbol': '股票代码',
+            'shares': '交易股数',
+            'price': '价格',
+            'value': '交易金额',
+            'commission': '手续费',
+            'type': '类型'
+        }, inplace=True)
+        
+        # 确保日期列是日期时间类型
+        if not pd.api.types.is_datetime64_any_dtype(trades_df['日期']):
+            trades_df['日期'] = pd.to_datetime(trades_df['日期'])
+        
+        # 添加交易类型的中文显示
+        trades_df['交易类型'] = trades_df['类型'].map({'buy': '买入', 'sell': '卖出'})
+        
+        # 统计交易信息
+        buy_count = len(trades_df[trades_df['类型'] == 'buy'])
+        sell_count = len(trades_df[trades_df['类型'] == 'sell'])
+        st.write(f"总交易次数: {len(trades_df)}, 买入次数: {buy_count}, 卖出次数: {sell_count}")
+        
+        # 显示交易记录表格
+        st.dataframe(trades_df[['日期', '股票代码', '交易类型', '交易股数', '价格', '交易金额', '手续费']], use_container_width=True)
+        
+        # 导出交易记录按钮
+        csv = trades_df.to_csv().encode('utf-8')
+        st.download_button(
+            label="下载交易记录CSV",
+            data=csv,
+            file_name='交易记录.csv',
+            mime='text/csv',
+        )
+
+    else:
+        st.write("无交易记录")
+    
+    # 显示投资组合价值变化
+    st.subheader("投资组合价值变化")
+    if not results['portfolio_value'].empty:
+        # 创建数据框
+        portfolio_value_df = pd.DataFrame(results['portfolio_value'], columns=['投资组合价值'])
+        
+        # 使用独立运行的买入并持有策略结果
+        if st.session_state.get('buy_hold_results'):
+            buy_hold_results = st.session_state.buy_hold_results
+            buy_hold_values = buy_hold_results['portfolio_value']
+            
+            # 确保索引匹配
+            common_index = portfolio_value_df.index.intersection(buy_hold_values.index)
+            if not common_index.empty:
+                # 将买入并持有策略的价值变化添加到数据框
+                portfolio_value_df['买入并持有'] = buy_hold_values.loc[common_index]
+        
+        # 使用独立运行的基准指数结果
+        if st.session_state.get('benchmark_results'):
+            benchmark_results = st.session_state.benchmark_results
+            benchmark_values = benchmark_results['portfolio_value']
+            
+            # 确保索引匹配
+            common_index = portfolio_value_df.index.intersection(benchmark_values.index)
+            if not common_index.empty:
+                # 添加到数据框
+                benchmark_name = st.session_state.get('benchmark_name', '基准指数')
+                portfolio_value_df[benchmark_name] = benchmark_values.loc[common_index]
+        
+        # 修改日期格式
+        date_labels = portfolio_value_df.index.strftime('%Y.%m.%d')
+        
+        # 计算每个策略的收益率百分比
+        initial_value = portfolio_value_df['投资组合价值'].iloc[0]
+        portfolio_value_df['投资组合收益率'] = (portfolio_value_df['投资组合价值'] / initial_value - 1) * 100
+        
+        buy_hold_initial = portfolio_value_df['买入并持有'].iloc[0]
+        portfolio_value_df['买入并持有收益率'] = (portfolio_value_df['买入并持有'] / buy_hold_initial - 1) * 100
+        
+        benchmark_name = st.session_state.get('benchmark_name', '基准指数')
+        if benchmark_name in portfolio_value_df.columns:
+            benchmark_initial = portfolio_value_df[benchmark_name].iloc[0]
+            portfolio_value_df[f'{benchmark_name}收益率'] = (portfolio_value_df[benchmark_name] / benchmark_initial - 1) * 100
+        
+        # 获取最大回撤信息
+        results = st.session_state.results
+        max_drawdown = results.get('max_drawdown', 0)
+        
+        # 计算最大回撤区域
+        portfolio_returns = results['returns']
+        cumulative_returns = (1 + portfolio_returns).cumprod()
+        peak = cumulative_returns.expanding(min_periods=1).max()
+        drawdown = (cumulative_returns/peak - 1)
+        
+        # 找到最大回撤的时间点
+        max_dd_idx = drawdown.idxmin()
+        # 找到最后一次达到峰值的时间点
+        last_peak_idx = peak.loc[:max_dd_idx].idxmax()
+        
+        # 找到从最大回撤点恢复到上一个峰值的时间点
+        recovery_idx = None
+        recovery_series = cumulative_returns.loc[max_dd_idx:]
+        if results.get('max_drawdown_recovery_days', 0) > 0:
+            # 已经恢复到峰值
+            for i, value in enumerate(recovery_series):
+                if value >= peak.loc[last_peak_idx]:
+                    recovery_idx = recovery_series.index[i]
+                    break
+        
+        # 创建Tab页面分别显示价值变化图和回撤分析图
+        tab1, tab2 = st.tabs(['价值变化', '回撤分析'])
+        
+        # 在第一个Tab显示价值变化图
+        with tab1:
+            # 创建价值变化图
+            fig_value = go.Figure()
+            
+            # 添加投资组合价值曲线
+            fig_value.add_trace(go.Scatter(
+                x=date_labels,
+                y=portfolio_value_df['投资组合价值'],
+                mode='lines',
+                name='投资组合价值',
+                line=dict(color='#1f77b4', width=2)
+            ))
+            
+            # 添加买入并持有策略曲线
+            fig_value.add_trace(go.Scatter(
+                x=date_labels,
+                y=portfolio_value_df['买入并持有'],
+                mode='lines',
+                name='买入并持有',
+                line=dict(color='#2ca02c', width=2)
+            ))
+            
+            # 添加基准指数曲线（如果有）
+            if benchmark_name in portfolio_value_df.columns:
+                fig_value.add_trace(go.Scatter(
+                    x=date_labels,
+                    y=portfolio_value_df[benchmark_name],
+                    mode='lines',
+                    name=benchmark_name,
+                    line=dict(color='#ff7f0e', width=2)
+                ))
+                
+            # 添加买入卖出点标记
+            if results['trades']:
+                trades_df = pd.DataFrame(results['trades'])
+                
+                # 确保trades_df有正确的列名
+                if len(trades_df.columns) == 7:
+                    trades_df.columns = ['日期', '股票代码', '交易股数', '价格', '交易金额', '手续费', '类型']
+                    trades_df['日期'] = pd.to_datetime(trades_df['日期'])
+                    
+                    # 买入点
+                    buy_trades = trades_df[trades_df['类型'] == 'buy']
+                    if not buy_trades.empty:
+                        # 确保日期格式一致
+                        buy_dates = buy_trades['日期'].dt.strftime('%Y.%m.%d').tolist()
+                        
+                        # 获取对应的价值点
+                        buy_values = []
+                        buy_texts = []
+                        for date in buy_trades['日期']:
+                            if date in portfolio_value_df.index:
+                                buy_values.append(portfolio_value_df.loc[date, '投资组合价值'])
+                                # 获取对应交易的详细信息
+                                trade_info = buy_trades[buy_trades['日期'] == date].iloc[0]
+                                buy_texts.append(
+                                    f"买入: {trade_info['股票代码']}<br>" +
+                                    f"股数: {trade_info['交易股数']:.0f}<br>" +
+                                    f"价格: ¥{trade_info['价格']:.2f}<br>" +
+                                    f"金额: ¥{trade_info['交易金额']:.2f}"
+                                )
+                        
+                        if buy_values:
+                            fig_value.add_trace(go.Scatter(
+                                x=buy_dates,
+                                y=buy_values,
+                                mode='markers',
+                                name='买入点',
+                                marker=dict(color='green', size=10, symbol='triangle-up'),
+                                text=buy_texts,
+                                hoverinfo='text'
+                            ))
+                    
+                    # 卖出点
+                    sell_trades = trades_df[trades_df['类型'] == 'sell']
+                    if not sell_trades.empty:
+                        # 确保日期格式一致
+                        sell_dates = sell_trades['日期'].dt.strftime('%Y.%m.%d').tolist()
+                        
+                        # 获取对应的价值点
+                        sell_values = []
+                        sell_texts = []
+                        for date in sell_trades['日期']:
+                            if date in portfolio_value_df.index:
+                                sell_values.append(portfolio_value_df.loc[date, '投资组合价值'])
+                                # 获取对应交易的详细信息
+                                trade_info = sell_trades[sell_trades['日期'] == date].iloc[0]
+                                sell_texts.append(
+                                    f"卖出: {trade_info['股票代码']}<br>" +
+                                    f"股数: {abs(trade_info['交易股数']):.0f}<br>" +
+                                    f"价格: ¥{trade_info['价格']:.2f}<br>" +
+                                    f"金额: ¥{abs(trade_info['交易金额']):.2f}"
+                                )
+                        
+                        if sell_values:
+                            fig_value.add_trace(go.Scatter(
+                                x=sell_dates,
+                                y=sell_values,
+                                mode='markers',
+                                name='卖出点',
+                                marker=dict(color='red', size=10, symbol='triangle-down'),
+                                text=sell_texts,
+                                hoverinfo='text'
+                            ))
+                            
+            # 添加隐藏的收益率曲线到第二个Y轴（只用于计算刻度范围）
+            fig_value.add_trace(go.Scatter(
+                x=date_labels,
+                y=portfolio_value_df['投资组合收益率'],
+                mode='lines',
+                name='投资组合收益率(%)',
+                line=dict(color='rgba(0,0,0,0)', width=0),  # 透明线条，实际上是隐藏的
+                yaxis='y2',
+                showlegend=False  # 不在图例中显示
+            ))
+            
+            # 添加隐藏的买入并持有收益率曲线（只用于计算刻度范围）
+            fig_value.add_trace(go.Scatter(
+                x=date_labels,
+                y=portfolio_value_df['买入并持有收益率'],
+                mode='lines',
+                name='买入并持有收益率(%)',
+                line=dict(color='rgba(0,0,0,0)', width=0),  # 透明线条，实际上是隐藏的
+                yaxis='y2',
+                showlegend=False  # 不在图例中显示
+            ))
+            
+            # 添加隐藏的基准指数收益率曲线（如果有）（只用于计算刻度范围）
+            if benchmark_name in portfolio_value_df.columns and f'{benchmark_name}收益率' in portfolio_value_df.columns:
+                fig_value.add_trace(go.Scatter(
+                    x=date_labels,
+                    y=portfolio_value_df[f'{benchmark_name}收益率'],
+                    mode='lines',
+                    name=f'{benchmark_name}收益率(%)',
+                    line=dict(color='rgba(0,0,0,0)', width=0),  # 透明线条，实际上是隐藏的
+                    yaxis='y2',
+                    showlegend=False  # 不在图例中显示
+                ))
+            
+            # 设置价值图的布局
+            fig_value.update_layout(
+                title='投资组合价值变化',
+                hovermode='closest',
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                xaxis=dict(
+                    title='日期',
+                    tickangle=45,
+                    tickmode='auto',
+                    nticks=20
+                ),
+                yaxis=dict(
+                    title='价值 (¥)',
+                    side='left'
+                ),
+                yaxis2=dict(
+                    title='收益率 (%)',
+                    side='right',
+                    overlaying='y',
+                    rangemode='tozero',
+                    showgrid=False
+                )
+            )
+                
+            # 显示价值变化图
+            st.plotly_chart(fig_value, use_container_width=True)
+        
+        # 在第二个Tab显示回撤分析图
+        with tab2:
+            # 创建回撤分析图
+            fig_drawdown = go.Figure()
+            
+            # 确保使用所有日期数据
+            all_dates = portfolio_value_df.index
+            
+            # 创建收益率数据
+            # 计算相对于初始值的收益率（百分比）
+            returns_pct = (cumulative_returns - 1) * 100
+            
+            # 先创建一个包含所有日期的收益率数据框
+            full_returns = pd.Series(index=all_dates, data=np.nan)
+            full_returns.loc[returns_pct.index] = returns_pct.values
+            # 对缺失的值进行插值
+            full_returns = full_returns.interpolate(method='linear')
+            
+            # 添加收益率曲线
+            fig_drawdown.add_trace(go.Scatter(
+                x=all_dates.strftime('%Y.%m.%d'),
+                y=full_returns.values,
+                mode='lines',
+                name='收益率(%)',
+                line=dict(color='#1f77b4', width=2)
+            ))
+        
+            # 如果有最大回撤区域，添加标记
+            if last_peak_idx and max_dd_idx:
+                # 获取峰值和谷值的收益率
+                peak_return = full_returns.loc[last_peak_idx]
+                bottom_return = full_returns.loc[max_dd_idx]
+                
+                # 添加峰值和谷值标记点
+                fig_drawdown.add_trace(go.Scatter(
+                    x=[last_peak_idx.strftime('%Y.%m.%d'), max_dd_idx.strftime('%Y.%m.%d')],
+                    y=[peak_return, bottom_return],
+                    mode='markers',
+                    name='最大回撤区间',
+                    marker=dict(color='red', size=8, symbol=['triangle-down', 'triangle-down']),
+                    text=[f'峰值: {last_peak_idx.strftime("%Y-%m-%d")}\n收益率: {peak_return:.2f}%', 
+                          f'谷值: {max_dd_idx.strftime("%Y-%m-%d")}\n收益率: {bottom_return:.2f}%\n最大回撤: {max_drawdown:.2%}'],
+                    hoverinfo='text'
+                ))
+                
+                # 在谷值位置添加最大回撤标注
+                fig_drawdown.add_annotation(
+                    x=max_dd_idx.strftime('%Y.%m.%d'),
+                    y=bottom_return,
+                    text=f'最大回撤: {max_drawdown:.2%}',
+                    showarrow=True,
+                    arrowhead=2,
+                    arrowsize=1,
+                    arrowwidth=2,
+                    arrowcolor='red',
+                    bgcolor='rgba(255, 255, 255, 0.8)',
+                    bordercolor='red',
+                    borderwidth=1,
+                    borderpad=4,
+                    ax=40,
+                    ay=-40
+                )
+                
+                # 添加最大回撤区域填充 (红色)
+                # 获取最大回撤区间的所有数据点
+                drawdown_dates = all_dates[(all_dates >= last_peak_idx) & (all_dates <= max_dd_idx)]
+                drawdown_returns = full_returns.loc[drawdown_dates]
+                
+                # 添加最大回撤区域的填充
+                fig_drawdown.add_trace(go.Scatter(
+                    x=drawdown_dates.strftime('%Y.%m.%d'),
+                    y=drawdown_returns,
+                    fill='tozeroy',
+                    fillcolor='rgba(255,0,0,0.15)',
+                    line=dict(color='rgba(255,0,0,0)'),
+                    name='最大回撤区域',
+                    showlegend=True
+                ))
+                
+                # 如果已恢复，添加恢复区域和标记
+                if recovery_idx:
+                    # 获取恢复点的收益率
+                    recovery_return = full_returns.loc[recovery_idx]
+                    
+                    # 添加恢复点标记
+                    fig_drawdown.add_trace(go.Scatter(
+                        x=[recovery_idx.strftime('%Y.%m.%d')],
+                        y=[recovery_return],
+                        mode='markers',
+                        name='回撤恢复点',
+                        marker=dict(color='green', size=8, symbol='triangle-up'),
+                        text=[f'恢复: {recovery_idx.strftime("%Y-%m-%d")}\n收益率: {recovery_return:.2f}%\n恢复天数: {results.get("max_drawdown_recovery_days", 0)}天'],
+                        hoverinfo='text'
+                    ))
+                    
+                    # 获取恢复区间的所有数据点
+                    recovery_dates = all_dates[(all_dates >= max_dd_idx) & (all_dates <= recovery_idx)]
+                    recovery_returns = full_returns.loc[recovery_dates]
+                    
+                    # 添加恢复区域的填充
+                    fig_drawdown.add_trace(go.Scatter(
+                        x=recovery_dates.strftime('%Y.%m.%d'),
+                        y=recovery_returns,
+                        fill='tozeroy',
+                        fillcolor='rgba(0,255,0,0.15)',
+                        line=dict(color='rgba(0,255,0,0)'),
+                        name='回撤恢复区域',
+                        showlegend=True
+                    ))
+                    
+                    # 添加恢复天数标注
+                    fig_drawdown.add_annotation(
+                        x=recovery_idx.strftime('%Y.%m.%d'),
+                        y=recovery_return,
+                        text=f'恢复天数: {results.get("max_drawdown_recovery_days", 0)}天',
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowsize=1,
+                        arrowwidth=2,
+                        arrowcolor='green',
+                        bgcolor='rgba(255, 255, 255, 0.8)',
+                        bordercolor='green',
+                        borderwidth=1,
+                        borderpad=4,
+                        ax=40,
+                        ay=40
+                    )
+                else:
+                    # 如果未恢复，显示正在恢复的区域和天数
+                    # 计算当前恢复天数
+                    current_recovery_days = len(portfolio_value_df.loc[max_dd_idx:].index)
+                    
+                    # 获取最后一天的收益率
+                    last_date = all_dates[-1]
+                    last_return = full_returns.iloc[-1]
+                    
+                    # 获取恢复区间的所有数据点
+                    recovery_dates = all_dates[(all_dates >= max_dd_idx) & (all_dates <= last_date)]
+                    recovery_returns = full_returns.loc[recovery_dates]
+                    
+                    # 添加正在恢复区域的填充
+                    fig_drawdown.add_trace(go.Scatter(
+                        x=recovery_dates.strftime('%Y.%m.%d'),
+                        y=recovery_returns,
+                        fill='tozeroy',
+                        fillcolor='rgba(255,255,0,0.15)',
+                        line=dict(color='rgba(255,255,0,0)'),
+                        name='正在恢复区域',
+                        showlegend=True
+                    ))
+                    
+                    # 添加当前恢复天数标注
+                    fig_drawdown.add_annotation(
+                        x=last_date.strftime('%Y.%m.%d'),
+                        y=last_return,
+                        text=f'当前恢复天数: {current_recovery_days}天',
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowsize=1,
+                        arrowwidth=2,
+                        arrowcolor='orange',
+                        bgcolor='rgba(255, 255, 255, 0.8)',
+                        bordercolor='orange',
+                        borderwidth=1,
+                        borderpad=4,
+                        ax=40,
+                        ay=40
+                    )
+                    
+            # 设置回撤图的布局
+            fig_drawdown.update_layout(
+                title='收益率与回撤分析',
+                xaxis_title='日期',
+                yaxis_title='收益率 (%)',
+                hovermode='closest',
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                xaxis=dict(
+                    tickangle=45,
+                    tickmode='auto',
+                    nticks=20
+                )
+            )
+            
+            # 显示回撤分析图
+            st.plotly_chart(fig_drawdown, use_container_width=True)
+        
+
+    else:
+        st.write("无投资组合价值变化数据")
+
+
 def main():
     """主函数"""
     # 标题
-    st.title("📈 股票基金回测系统")
-    st.markdown("---")
-    
+    st.title("📈 股票回测系统")
     # 侧边栏 - 参数设置
     with st.sidebar:
         st.header("📊 回测参数设置")
@@ -159,14 +1151,6 @@ def main():
                 max_value=datetime.now()
             )
         
-        # 初始资金
-        initial_capital = st.number_input(
-            "初始资金 ($)",
-            value=100000,
-            min_value=1000,
-            step=1000
-        )
-        
         # 基准指数
         benchmark = st.selectbox(
             "基准指数",
@@ -181,87 +1165,41 @@ def main():
             }.get(x, x),
             index=0  # 默认选择沪深300
         )
-        
-        # 策略选择
-        st.subheader("策略设置")
-        strategy_name = st.selectbox(
-            "选择策略",
-            options=['moving_average', 'ma_breakout', 'rsi', 'macd', 'dca', 'mean_reversion'],
-            format_func=lambda x: {
-                'moving_average': '移动平均',
-                'ma_breakout': '均线突破',
-                'rsi': 'RSI策略',
-                'macd': 'MACD策略',
-                'dca': '定投策略',
-                'mean_reversion': '均值回归'
-            }.get(x, x)
-        )
-        
-        # 策略参数
-        strategy_params = {}
-        
-        if strategy_name == 'moving_average':
-            st.subheader("移动平均参数")
-            strategy_params['short_window'] = st.slider("短期窗口", 5, 50, 20)
-            strategy_params['long_window'] = st.slider("长期窗口", 20, 200, 60)
-            
-        elif strategy_name == 'ma_breakout':
-            st.subheader("均线突破参数")
-            strategy_params['ma_period'] = st.slider("均线周期", 5, 100, 20, help="移动平均线的天数，默认20日均线")
-            strategy_params['threshold'] = st.slider("突破阈值(%)", 0.0, 10.0, 0.0, 0.1, help="价格需要超过均线多少百分比才触发信号") / 100.0
-            
-        elif strategy_name == 'rsi':
-            st.subheader("RSI参数")
-            strategy_params['rsi_period'] = st.slider("RSI周期", 5, 30, 14)
-            strategy_params['oversold'] = st.slider("超卖线", 10, 40, 30)
-            strategy_params['overbought'] = st.slider("超买线", 60, 90, 70)
-            
-        elif strategy_name == 'dca':
-            st.subheader("定投策略参数")
-            
-            # 定投频率
-            strategy_params['frequency'] = st.selectbox(
-                "定投频率",
-                options=['daily', 'weekly', 'monthly'],
-                format_func=lambda x: {'daily': '每日', 'weekly': '每周', 'monthly': '每月'}.get(x, x)
-            )
-            
-            # 交易日选择
-            if strategy_params['frequency'] in ['monthly', 'weekly']:
-                strategy_params['trading_day'] = st.slider(
-                    "第几个交易日", 
-                    1, 10, 1,
-                    help="选择每月/每周的第几个交易日进行定投"
-                )
-            
-            # 定投金额
-            strategy_params['investment_amount'] = st.number_input(
-                "每次定投金额 (¥)", 
-                min_value=1000, max_value=100000, 
-                value=10000, step=1000,
-                help="每次定投投入的资金金额"
-            )
-            
-            # 持仓增量
-            strategy_params['position_increment'] = st.slider(
-                "每次持仓增量", 
-                0.05, 0.5, 0.1, 0.05,
-                help="每次定投后持仓比例的增加量"
-            )
-            
-            # 最大持仓
-            strategy_params['max_position'] = st.slider(
-                "最大持仓比例", 
-                0.5, 1.0, 1.0, 0.1,
-                help="定投策略的最大持仓比例"
-            )
-            
-        elif strategy_name == 'mean_reversion':
-            st.subheader("均值回归参数")
-            strategy_params['lookback_period'] = st.slider("回望期", 10, 50, 20)
-            strategy_params['entry_threshold'] = st.slider("入场阈值", 1.0, 3.0, 2.0)
+
+    # 主界面 - 策略配置
+    # 检查是否需要创建新的投资组合
+    if 'portfolio' not in st.session_state:
+        st.session_state.portfolio = Portfolio()
     
-    # 主界面
+    # 确保所有选中的股票都在投资组合中
+    for symbol in symbols:
+        if symbol not in st.session_state.portfolio.stocks:
+            st.session_state.portfolio.add_stock(symbol)
+            # st.info(f"添加了新股票: {symbol}")
+    
+    # 移除不在当前选择中的股票
+    stocks_to_remove = []
+    for symbol in st.session_state.portfolio.stocks:
+        if symbol not in symbols:
+            stocks_to_remove.append(symbol)
+    
+    for symbol in stocks_to_remove:
+        st.session_state.portfolio.remove_stock(symbol)
+        # st.info(f"移除了股票: {symbol}")
+    
+    # 调试显示当前投资组合中的股票和策略
+    with st.expander("当前投资组合信息", expanded=False):
+        st.write(f"投资组合中的股票数量: {len(st.session_state.portfolio.stocks)}")
+        for symbol, stock in st.session_state.portfolio.stocks.items():
+            st.write(f"股票 {symbol}:")
+            st.write(f"  买入策略数量: {stock.get_enabled_buy_strategie_number()}")
+            st.write(f"  卖出策略数量: {stock.get_enabled_sell_strategie_number()}")
+    
+    # 渲染每个股票的策略卡片
+    for symbol in symbols:
+        render_stock_strategy_card(symbol, st.session_state.portfolio)
+    
+    # 开始回测按钮
     if st.button("🚀 开始回测", type="primary"):
         if not symbols:
             st.error("请输入至少一个股票代码")
@@ -273,475 +1211,76 @@ def main():
         
         # 显示进度
         with st.spinner("正在运行回测，请稍候..."):
-            try:
-                # 运行回测
-                results = run_backtest_cached(
-                    symbols=symbols,
-                    strategy_name=strategy_name,
-                    strategy_params=strategy_params,
-                    start_date=start_date.strftime('%Y-%m-%d'),
-                    end_date=end_date.strftime('%Y-%m-%d'),
-                    initial_capital=initial_capital,
-                    benchmark=benchmark
-                )
+            # 调试日志：打印投资组合信息
+            st.write("### 调试信息")
+            st.write(f"投资组合中的股票数量: {len(st.session_state.portfolio.stocks)}")
+            for symbol, stock in st.session_state.portfolio.stocks.items():
+                st.write(f"股票 {symbol}:")
+                st.write(f"  初始投资: {stock.initial_investment}")
+                st.write(f"  最大投资: {stock.max_investment}")
+                st.write(f"  买入策略数量: {stock.get_enabled_buy_strategie_number()}")
+                for i, strategy in enumerate(stock.buy_strategies):
+                    if strategy.enabled:
+                        st.write(f"    买入策略 {i+1}: {strategy.name}, 类型: {strategy.type}")
+                        st.write(f"    参数: {strategy.params}")
+                st.write(f"  卖出策略数量: {stock.get_enabled_sell_strategie_number()}")
+                for i, strategy in enumerate(stock.sell_strategies):
+                    if strategy.enabled:
+                        st.write(f"    卖出策略 {i+1}: {strategy.name}, 类型: {strategy.type}")
+                        st.write(f"    参数: {strategy.params}")
+            
+            # 运行自定义策略回测
+            results = run_backtest_cached(
+                _portfolio=st.session_state.portfolio,
+                symbols=symbols,
+                start_date=start_date.strftime('%Y-%m-%d'),
+                end_date=end_date.strftime('%Y-%m-%d')
+            )
+            
+            # 运行买入并持有策略回测
+            # 运行基准指数回测
+            # 使用相同的初始资金
+            all_initial_capital = results['initial_capital']
+
+            # 将基准指数代码和中文名称都保存到session_state
+            benchmark_name_map = {
+                'sh000300': '沪深300',
+                'sh000001': '上证指数',
+                'sz399001': '深证成指',
+                'sz399006': '创业板指',
+                'sz399905': '中证500',
+                'sz399852': '中证1000'
+            }
+            st.session_state.benchmark_symbol = benchmark
+            st.session_state.benchmark_name = benchmark_name_map.get(benchmark, benchmark)
+            benchmark_results = run_benchmark_backtest(
+                symbol=benchmark,
+                start_date=start_date.strftime('%Y-%m-%d'),
+                end_date=end_date.strftime('%Y-%m-%d'),
+                initial_capital=all_initial_capital
+            )
                 
-                # 存储结果到session state
-                st.session_state.results = results
-                st.session_state.show_results = True
-                
-                st.success("✅ 回测完成！")
-                
-            except Exception as e:
-                st.error(f"❌ 回测失败: {str(e)}")
-                return
+            initial_capitals = [stock.max_investment for stock in st.session_state.portfolio.stocks.values()]
+            buy_hold_results = run_buy_hold_backtest(
+                symbols=symbols,
+                start_date=start_date.strftime('%Y-%m-%d'),
+                end_date=end_date.strftime('%Y-%m-%d'),
+                initial_capitals=initial_capitals
+            )
+                    
+            # 存储结果到session state
+            st.session_state.results = results
+            st.session_state.benchmark_results = benchmark_results
+            st.session_state.buy_hold_results = buy_hold_results
+            st.session_state.show_results = True
+            
+            st.success("✅ 回测完成！")
     
     # 显示结果
     if hasattr(st.session_state, 'show_results') and st.session_state.show_results:
         display_results(st.session_state.results)
 
 
-def display_results(results):
-    """显示回测结果"""
-    
-    # 计算性能指标
-    analyzer = PerformanceAnalyzer()
-    metrics = analyzer.calculate_performance_metrics(
-        results['returns'],
-        results.get('benchmark_returns')
-    )
-    
-    # 关键指标卡片
-    st.header("📊 关键指标")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        final_value = results['portfolio_value'].iloc[-1]
-        total_return = metrics.get('total_return', 0)
-        st.metric(
-            label="最终价值",
-            value=f"¥{final_value:,.0f}",
-            delta=f"{total_return:.1%}"
-        )
-    
-    with col2:
-        annual_return = metrics.get('annualized_return', 0)
-        st.metric(
-            label="年化收益率",
-            value=f"{annual_return:.2%}",
-            delta=None
-        )
-    
-    with col3:
-        sharpe_ratio = metrics.get('sharpe_ratio', 0)
-        st.metric(
-            label="夏普比率",
-            value=f"{sharpe_ratio:.2f}",
-            delta=None
-        )
-    
-    with col4:
-        max_drawdown = metrics.get('max_drawdown', 0)
-        st.metric(
-            label="最大回撤",
-            value=f"{max_drawdown:.2%}",
-            delta=None
-        )
-    
-    # 图表展示
-    st.header("📈 表现图表")
-    
-    tab1, tab2, tab3, tab4 = st.tabs(["投资组合表现", "收益率分析", "风险分析", "交易信号"])
-    
-    with tab1:
-        st.subheader("投资组合价值走势")
-        
-        # 创建交互式图表
-        fig = go.Figure()
-        
-        # 投资组合价值（策略）
-        fig.add_trace(go.Scatter(
-            x=results['portfolio_value'].index,
-            y=results['portfolio_value'].values,
-            mode='lines',
-            name='当前策略',
-            line=dict(color='blue', width=3),
-            hovertemplate='日期: %{x}<br>策略价值: ¥%{y:,.0f}<extra></extra>'
-        ))
-        
-        # 买入持有基准对比（不使用策略的曲线）
-        if 'price_data' in results and len(results['symbols']) == 1:
-            symbol = results['symbols'][0]
-            if symbol in results['price_data'].columns:
-                # 计算买入持有价值
-                first_price = results['price_data'][symbol].iloc[0]
-                buy_hold_shares = results['initial_capital'] / first_price
-                buy_hold_value = results['price_data'][symbol] * buy_hold_shares
-                
-                fig.add_trace(go.Scatter(
-                    x=buy_hold_value.index,
-                    y=buy_hold_value.values,
-                    mode='lines',
-                    name='一直持有收益',
-                    line=dict(color='gray', width=2, dash='dot'),
-                    hovertemplate='日期: %{x}<br>一直持有: ¥%{y:,.0f}<extra></extra>'
-                ))
-        
-        # 基准指数对比
-        if results.get('benchmark_returns') is not None:
-            benchmark_value = (1 + results['benchmark_returns']).cumprod() * results['initial_capital']
-            benchmark_name = results.get("benchmark", "")
-            # 转换基准指数名称为中文
-            benchmark_names = {
-                'sh000300': '沪深300',
-                'sh000001': '上证指数',
-                'sz399001': '深证成指',
-                'sz399006': '创业板指'
-            }
-            display_name = benchmark_names.get(benchmark_name, benchmark_name)
-            
-            fig.add_trace(go.Scatter(
-                x=benchmark_value.index,
-                y=benchmark_value.values,
-                mode='lines',
-                name=display_name,
-                line=dict(color='red', width=2, dash='dash'),
-                hovertemplate='日期: %{x}<br>基准价值: ¥%{y:,.0f}<extra></extra>'
-            ))
-        
-        # 添加买卖点标记
-        if 'signals' in results and 'price_data' in results and len(results['symbols']) == 1:
-            symbol = results['symbols'][0]
-            signals = results['signals']
-            price_data = results['price_data'][symbol]
-            
-            # 买入信号
-            buy_signals = signals[signals == 1]
-            if len(buy_signals) > 0:
-                buy_prices = price_data.loc[buy_signals.index]
-                # 计算对应的投资组合价值
-                buy_portfolio_values = results['portfolio_value'].loc[buy_signals.index]
-                fig.add_trace(go.Scatter(
-                    x=buy_signals.index,
-                    y=buy_portfolio_values.values,
-                    mode='markers',
-                    name=f'买入信号 ({len(buy_signals)})',
-                    marker=dict(
-                        symbol='triangle-up',
-                        color='green',
-                        size=12,
-                        line=dict(color='darkgreen', width=2)
-                    ),
-                    hovertemplate='买入<br>日期: %{x}<br>投资组合价值: ¥%{y:,.0f}<extra></extra>',
-                    showlegend=True
-                ))
-            
-            # 卖出信号
-            sell_signals = signals[signals == -1]
-            if len(sell_signals) > 0:
-                sell_prices = price_data.loc[sell_signals.index]
-                # 计算对应的投资组合价值
-                sell_portfolio_values = results['portfolio_value'].loc[sell_signals.index]
-                fig.add_trace(go.Scatter(
-                    x=sell_signals.index,
-                    y=sell_portfolio_values.values,
-                    mode='markers',
-                    name=f'卖出信号 ({len(sell_signals)})',
-                    marker=dict(
-                        symbol='triangle-down',
-                        color='red',
-                        size=12,
-                        line=dict(color='darkred', width=2)
-                    ),
-                    hovertemplate='卖出<br>日期: %{x}<br>投资组合价值: ¥%{y:,.0f}<extra></extra>',
-                    showlegend=True
-                ))
-        
-        # 设置x轴日期格式为中文
-        fig.update_xaxes(
-            tickformat='%Y年%m月%d日',
-            tickangle=45
-        )
-        
-        fig.update_layout(
-            title="投资组合表现对比 (含买卖点)",
-            xaxis_title="日期",
-            yaxis_title="价值 (¥)",
-            hovermode='x unified',
-            height=600
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # 显示交易统计
-        if 'signals' in results:
-            signals = results['signals']
-            buy_count = (signals == 1).sum()
-            sell_count = (signals == -1).sum()
-            hold_count = (signals == 0).sum()
-            
-            # 计算策略vs买入持有的表现
-            if 'price_data' in results and len(results['symbols']) == 1:
-                symbol = results['symbols'][0]
-                if symbol in results['price_data'].columns:
-                    first_price = results['price_data'][symbol].iloc[0]
-                    last_price = results['price_data'][symbol].iloc[-1]
-                    buy_hold_shares = results['initial_capital'] / first_price
-                    buy_hold_final = last_price * buy_hold_shares
-                    buy_hold_return = (buy_hold_final / results['initial_capital'] - 1) * 100
-                    strategy_return = (final_value / results['initial_capital'] - 1) * 100
-                    excess_return = strategy_return - buy_hold_return
-                    
-                    st.info(f"""
-                    📊 **交易统计**: 买入信号 {buy_count} 次，卖出信号 {sell_count} 次，持有 {hold_count} 次
-                    
-                    💰 **收益对比**: 当前策略 {strategy_return:.2f}%，一直持有 {buy_hold_return:.2f}%，超额收益 {excess_return:+.2f}%
-                    """)
-            else:
-                st.info(f"📊 **交易统计**: 买入信号 {buy_count} 次，卖出信号 {sell_count} 次，持有 {hold_count} 次")
-    
-    with tab2:
-        st.subheader("收益率分布")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # 日收益率直方图
-            fig_hist = px.histogram(
-                x=results['returns'] * 100,
-                nbins=50,
-                title="日收益率分布",
-                labels={'x': '日收益率 (%)', 'y': '频数'}
-            )
-            fig_hist.add_vline(
-                x=results['returns'].mean() * 100,
-                line_dash="dash",
-                line_color="red",
-                annotation_text="平均值"
-            )
-            st.plotly_chart(fig_hist, use_container_width=True)
-        
-        with col2:
-            # 累积收益率
-            cumulative_returns = (results['portfolio_value'] / results['initial_capital'] - 1) * 100
-            
-            fig_cum = go.Figure()
-            fig_cum.add_trace(go.Scatter(
-                x=cumulative_returns.index,
-                y=cumulative_returns.values,
-                mode='lines',
-                fill='tozeroy',
-                name='累积收益率'
-            ))
-            
-                    # 设置x轴日期格式为中文
-        fig_cum.update_xaxes(
-            tickformat='%Y年%m月%d日',
-            tickangle=45
-        )
-        
-        fig_cum.update_layout(
-            title="累积收益率",
-            xaxis_title="日期",
-            yaxis_title="累积收益率 (%)"
-        )
-        
-        st.plotly_chart(fig_cum, use_container_width=True)
-    
-    with tab3:
-        st.subheader("风险分析")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # 回撤图
-            portfolio_normalized = results['portfolio_value'] / results['initial_capital']
-            running_max = portfolio_normalized.expanding().max()
-            drawdown = (portfolio_normalized - running_max) / running_max * 100
-            
-            fig_dd = go.Figure()
-            fig_dd.add_trace(go.Scatter(
-                x=drawdown.index,
-                y=drawdown.values,
-                mode='lines',
-                fill='tozeroy',
-                name='回撤',
-                fillcolor='rgba(255,0,0,0.3)'
-            ))
-            
-            # 设置x轴日期格式为中文
-            fig_dd.update_xaxes(
-                tickformat='%Y年%m月%d日',
-                tickangle=45
-            )
-            
-            fig_dd.update_layout(
-                title="资产回撤",
-                xaxis_title="日期",
-                yaxis_title="回撤 (%)"
-            )
-            
-            st.plotly_chart(fig_dd, use_container_width=True)
-        
-        with col2:
-            # 滚动波动率
-            rolling_vol = results['returns'].rolling(window=30).std() * np.sqrt(252) * 100
-            
-            fig_vol = go.Figure()
-            fig_vol.add_trace(go.Scatter(
-                x=rolling_vol.index,
-                y=rolling_vol.values,
-                mode='lines',
-                name='滚动波动率'
-            ))
-            
-            # 设置x轴日期格式为中文
-            fig_vol.update_xaxes(
-                tickformat='%Y年%m月%d日',
-                tickangle=45
-            )
-            
-            fig_vol.update_layout(
-                title="30日滚动波动率",
-                xaxis_title="日期",
-                yaxis_title="年化波动率 (%)"
-            )
-            
-            st.plotly_chart(fig_vol, use_container_width=True)
-    
-    with tab4:
-        st.subheader("交易信号分析")
-        
-        if len(results['symbols']) == 1 and 'price_data' in results:
-            symbol = results['symbols'][0]
-            price_data = results['price_data'][symbol]
-            signals = results.get('signals', pd.Series())
-            
-            fig_signals = go.Figure()
-            
-            # 价格线
-            fig_signals.add_trace(go.Scatter(
-                x=price_data.index,
-                y=price_data.values,
-                mode='lines',
-                name='价格',
-                line=dict(color='blue')
-            ))
-            
-            # 买入信号
-            buy_signals = signals[signals == 1]
-            if len(buy_signals) > 0:
-                buy_prices = price_data.loc[buy_signals.index]
-                fig_signals.add_trace(go.Scatter(
-                    x=buy_signals.index,
-                    y=buy_prices.values,
-                    mode='markers',
-                    name='买入信号',
-                    marker=dict(color='green', size=10, symbol='triangle-up')
-                ))
-            
-            # 卖出信号
-            sell_signals = signals[signals == -1]
-            if len(sell_signals) > 0:
-                sell_prices = price_data.loc[sell_signals.index]
-                fig_signals.add_trace(go.Scatter(
-                    x=sell_signals.index,
-                    y=sell_prices.values,
-                    mode='markers',
-                    name='卖出信号',
-                    marker=dict(color='red', size=10, symbol='triangle-down')
-                ))
-            
-            # 设置x轴日期格式为中文
-            fig_signals.update_xaxes(
-                tickformat='%Y年%m月%d日',
-                tickangle=45
-            )
-            
-            fig_signals.update_layout(
-                title=f"{symbol} 价格走势与交易信号",
-                xaxis_title="日期",
-                yaxis_title="价格 (¥)"
-            )
-            
-            st.plotly_chart(fig_signals, use_container_width=True)
-    
-    # 详细性能报告
-    st.header("📋 详细性能报告")
-    
-    with st.expander("查看完整报告", expanded=False):
-        report = analyzer.generate_performance_report(results)
-        st.text(report)
-    
-    # 交易记录
-    if results.get('trades'):
-        st.header("💼 交易记录")
-        
-        trades_df = pd.DataFrame(results['trades'])
-        if not trades_df.empty:
-            # 格式化交易记录，全部中文化
-            trades_df['交易日期'] = pd.to_datetime(trades_df['date']).dt.strftime('%Y年%m月%d日')
-            trades_df['股票代码'] = trades_df['symbol']
-            trades_df['交易类型'] = trades_df['type'].map({'buy': '买入', 'sell': '卖出'})
-            trades_df['交易股数'] = trades_df['shares'].round(2)
-            trades_df['交易价格'] = trades_df['price'].apply(lambda x: f"¥{x:.2f}")
-            trades_df['交易金额'] = trades_df['value'].apply(lambda x: f"¥{x:,.2f}")
-            trades_df['手续费'] = trades_df['commission'].apply(lambda x: f"¥{x:.2f}")
-            
-            # 选择要显示的列
-            display_cols = ['交易日期', '股票代码', '交易类型', '交易股数', '交易价格', '交易金额', '手续费']
-            display_df = trades_df[display_cols].copy()
-            
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # 交易汇总统计
-            buy_trades = trades_df[trades_df['type'] == 'buy']
-            sell_trades = trades_df[trades_df['type'] == 'sell']
-            total_commission = trades_df['commission'].sum()
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("买入次数", len(buy_trades))
-            with col2:
-                st.metric("卖出次数", len(sell_trades))
-            with col3:
-                st.metric("总手续费", f"¥{total_commission:.2f}")
-            
-            # 下载按钮
-            csv = display_df.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="📥 下载交易记录 (CSV)",
-                data=csv,
-                file_name="交易记录.csv",
-                mime="text/csv"
-            )
-
-
-def sidebar_info():
-    """侧边栏信息"""
-    with st.sidebar:
-        st.markdown("---")
-        st.info(
-            "💡 **使用提示**\n\n"
-            "1. 选择股票代码和时间范围\n"
-            "2. 选择合适的交易策略\n"
-            "3. 调整策略参数\n"
-            "4. 点击开始回测按钮\n"
-            "5. 查看结果和分析报告"
-        )
-        
-        st.warning(
-            "⚠️ **免责声明**\n\n"
-            "本系统仅用于学习和研究目的，"
-            "不构成任何投资建议。"
-            "投资有风险，入市需谨慎。"
-        )
-
-
 if __name__ == "__main__":
-    sidebar_info()
     main()
+

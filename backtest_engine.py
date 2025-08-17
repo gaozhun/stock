@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-回测引擎模块
-负责执行策略回测和生成交易记录
+回测引擎模块 - 重构版本
+支持每只股票独立的策略配置和结果展示
 """
 
 import pandas as pd
@@ -12,23 +12,25 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from data_handler import DataHandler
-from strategies import BaseStrategy, StrategyFactory
-from config import BACKTEST_CONFIG, BENCHMARK_CONFIG
+from stock_strategy import Strategy, SignalType
+from config import BACKTEST_CONFIG
+from stock_strategy import Portfolio, Stock
 
 
 class BacktestEngine:
     """回测引擎"""
     
-    def __init__(self, initial_capital: float = None, commission_rate: float = None):
+    def __init__(self, initial_capital: float = None):
         """
         初始化回测引擎
         
         Args:
             initial_capital: 初始资金
-            commission_rate: 手续费率
         """
-        self.initial_capital = initial_capital or BACKTEST_CONFIG['initial_capital']
-        self.commission_rate = commission_rate or BACKTEST_CONFIG['commission_rate']
+        # self.initial_capital = initial_capital or BACKTEST_CONFIG['initial_capital']
+        # self.slippage = BACKTEST_CONFIG['slippage']
+        # self.min_trade_amount = BACKTEST_CONFIG['min_trade_amount']
+        # self.max_position_per_stock = BACKTEST_CONFIG['max_position_per_stock']
         
         # 回测结果
         self.portfolio_value = pd.Series()
@@ -40,271 +42,316 @@ class BacktestEngine:
         # 数据处理器
         self.data_handler = DataHandler()
     
-    def run_backtest(self, 
-                    symbols: List[str],
-                    strategy: BaseStrategy,
-                    start_date: str,
-                    end_date: str,
-                    benchmark: str = None) -> Dict[str, Any]:
+    def run_portfolio_backtest(self,
+                         portfolio: Portfolio,
+                         symbols: List[str],
+                         start_date: str,
+                         end_date: str,
+                         benchmark: str = None,
+                         custom_data: Dict[str, pd.DataFrame] = None) -> Dict[str, Any]:
         """
-        运行回测
+        运行投资组合回测
         
         Args:
+            portfolio: 投资组合
             symbols: 股票代码列表
-            strategy: 交易策略
             start_date: 开始日期
             end_date: 结束日期
             benchmark: 基准指数
+            custom_data: 自定义价格数据，用于测试
             
         Returns:
             回测结果字典
         """
-        print(f"开始回测策略: {strategy.name}")
+        print(f"开始回测投资组合策略")
         print(f"股票池: {symbols}")
         print(f"回测期间: {start_date} 至 {end_date}")
         
-        # 获取价格数据
-        if len(symbols) == 1:
-            price_data = self.data_handler.get_stock_data(symbols[0], start_date, end_date)
-            price_data = price_data[['Close']].rename(columns={'Close': symbols[0]})
-        else:
-            price_data = self.data_handler.get_multiple_stocks(symbols, start_date, end_date)
+        # 调试日志：打印投资组合信息
+        print("### 调试信息 - 投资组合详情")
+        print(f"投资组合中的股票数量: {len(portfolio.stocks)}")
+        for symbol, stock in portfolio.stocks.items():
+            print(f"股票 {symbol}:")
+            print(f"  初始投资: {stock.initial_investment}")
+            print(f"  最大投资: {stock.max_investment}")
+            print(f"  买入策略数量: {len(stock.buy_strategies)}")
+            for i, strategy in enumerate(stock.buy_strategies):
+                print(f"    买入策略 {i+1}: {strategy.name}, 类型: {strategy.type}")
+                print(f"    参数: {strategy.params}")
+            print(f"  卖出策略数量: {len(stock.sell_strategies)}")
+            for i, strategy in enumerate(stock.sell_strategies):
+                print(f"    卖出策略 {i+1}: {strategy.name}, 类型: {strategy.type}")
+                print(f"    参数: {strategy.params}")
+        
+        # 获取所有股票的价格数据
+        price_data = {}
+        for symbol in symbols:
+            # 如果提供了自定义数据，则使用自定义数据
+            if custom_data and symbol in custom_data:
+                data = custom_data[symbol]
+                print(f"使用自定义数据: {symbol}")
+            else:
+                # 否则从数据源获取数据
+                data = self.data_handler.get_stock_data(symbol, start_date, end_date)
+            
+            price_data[symbol] = data
+            
+            # 打印实际数据范围
+            if not data.empty:
+                actual_start = data.index.min().strftime('%Y-%m-%d')
+                actual_end = data.index.max().strftime('%Y-%m-%d')
+                print(f"股票 {symbol} 实际数据区间: {actual_start} 至 {actual_end}")
         
         # 获取基准数据
-        if benchmark is None:
-            benchmark = BENCHMARK_CONFIG.get('default', 'sh000300')
-        
         benchmark_data = None
-        benchmark_name = BENCHMARK_CONFIG.get('available_benchmarks', {}).get(benchmark, benchmark)
+        if benchmark:
+            try:
+                benchmark_data = self.data_handler.get_benchmark_data(start_date, end_date, benchmark)
+                print(f"📊 使用基准指数: {benchmark}")
+            except Exception as e:
+                print(f"⚠️  无法获取基准数据 {benchmark}: {str(e)}")
         
-        try:
-            benchmark_data = self.data_handler.get_benchmark_data(start_date, end_date, benchmark)
-            print(f"📊 使用基准指数: {benchmark_name} ({benchmark})")
-        except Exception as e:
-            print(f"⚠️  无法获取基准数据 {benchmark_name}: {str(e)}")
+        # 初始化结果容器
+        stock_results = {}
+        portfolio_trades = []
+        portfolio_values = pd.Series(index=price_data[symbols[0]].index, data=0.0)
+        portfolio_positions = pd.DataFrame(index=price_data[symbols[0]].index)
         
-        # 生成交易信号
-        if len(symbols) == 1:
-            full_data = self.data_handler.get_stock_data(symbols[0], start_date, end_date)
-            signals = strategy.generate_signals(full_data)
-        else:
-            # 对于多股票，使用第一只股票生成信号（可以扩展为更复杂的逻辑）
-            full_data = self.data_handler.get_stock_data(symbols[0], start_date, end_date)
-            signals = strategy.generate_signals(full_data)
+        # 为每只股票运行回测
+        for symbol in symbols:
+            # 运行单只股票回测
+            stock_result = self._run_single_stock_backtest(
+                symbol=symbol,
+                price_data=price_data[symbol],
+                stock=portfolio.stocks[symbol]
+            )
+            
+            # 保存结果
+            stock_results[symbol] = stock_result
+            portfolio_trades.extend(stock_result['trades'])
+            portfolio_values += stock_result['portfolio_value']
+            portfolio_positions[symbol] = stock_result['positions']['holdings']
         
-        # 计算持仓
-        positions = strategy.calculate_positions(signals)
+        # 计算投资组合收益率
+        portfolio_returns = portfolio_values.pct_change().dropna()
         
-        # 获取交易信号（如果策略支持）
-        trading_signals = None
-        if hasattr(strategy, 'get_trading_signals'):
-            trading_signals = strategy.get_trading_signals(signals)
-        
-        # 执行回测计算
-        portfolio_results = self._calculate_portfolio_performance(
-            price_data, positions, symbols, trading_signals
-        )
-        
-        # 计算基准表现
+        # 计算基准收益率
         benchmark_returns = None
         if benchmark_data is not None:
             benchmark_returns = benchmark_data['Close'].pct_change().dropna()
         
-        # 计算总收益率
-        final_value = portfolio_results['portfolio_value'].iloc[-1]
-        total_return = (final_value / self.initial_capital) - 1
-        
         # 生成回测报告
+        # 使用最大投资资金作为初始资金
+        max_investment = sum(stock.max_investment for stock in portfolio.stocks.values())
+        initial_capital = max_investment
+        
+        final_value = portfolio_values.iloc[-1]
+        
+        # 计算总收益率，避免除以零
+        if initial_capital > 0:
+            total_return = (final_value / initial_capital) - 1
+        else:
+            total_return = 0
+        
+        # 计算年化收益率
+        days = len(portfolio_values)
+        years = days / 252.0
+        annualized_return = 0
+        if years > 0 and total_return > -1:  # 避免负收益率的年化计算问题
+            annualized_return = (1 + total_return) ** (1 / years) - 1
+        
+        # 计算风险指标
+        volatility = portfolio_returns.std() * np.sqrt(252)  # 年化波动率
+        
+        # 计算最大回撤
+        cumulative_returns = (1 + portfolio_returns).cumprod()
+        peak = cumulative_returns.expanding(min_periods=1).max()
+        drawdown = (cumulative_returns/peak - 1)
+        max_drawdown = drawdown.min()
+        
+        # 计算夏普比率
+        risk_free_rate = 0.02  # 无风险利率假设为2%
+        sharpe_ratio = (annualized_return - risk_free_rate) / volatility if volatility > 0 else 0
+        
+        # 计算最大回撤修复时间
+        max_drawdown_recovery_days = 0
+        if max_drawdown < 0:
+            # 找到最大回撤的时间点
+            max_dd_idx = drawdown.idxmin()
+            # 找到最后一次达到峰值的时间点
+            last_peak_idx = peak.loc[:max_dd_idx].idxmax()
+            
+            # 找到从最大回撤点恢复到上一个峰值的时间点
+            recovery_series = cumulative_returns.loc[max_dd_idx:]
+            recovery_idx = None
+            
+            # 检查是否已经恢复
+            if recovery_series.max() >= peak.loc[last_peak_idx]:
+                # 已经恢复到峰值
+                for i, value in enumerate(recovery_series):
+                    if value >= peak.loc[last_peak_idx]:
+                        recovery_idx = recovery_series.index[i]
+                        break
+                
+                if recovery_idx is not None and recovery_idx != max_dd_idx:
+                    # 计算从最大回撤到恢复的天数
+                    max_drawdown_recovery_days = len(recovery_series.loc[max_dd_idx:recovery_idx])
+            else:
+                # 到回测结束仍未恢复到峰值，标记为未恢复
+                max_drawdown_recovery_days = -1  # 使用-1表示未恢复
+        
         results = {
-            'strategy_name': strategy.name,
-            'symbols': symbols,
-            'start_date': start_date,
-            'end_date': end_date,
-            'initial_capital': self.initial_capital,
-            'final_value': final_value,
-            'total_return': total_return,
-            'portfolio_value': portfolio_results['portfolio_value'],
-            'returns': portfolio_results['returns'],
-            'positions': portfolio_results['positions'],
-            'trades': portfolio_results['trades'],
-            'benchmark_returns': benchmark_returns,
-            'benchmark': benchmark,
-            'signals': signals,
-            'price_data': price_data
+            'portfolio_value': portfolio_values, # 投资组合价值
+            'returns': portfolio_returns, # 投资组合收益率
+            'positions': portfolio_positions, # 持仓情况
+            'trades': portfolio_trades, # 交易记录
+            'benchmark_returns': benchmark_returns, # 基准收益率
+            'benchmark': benchmark, # 基准指数
+            'stock_results': stock_results, # 股票回测结果
+            'initial_capital': initial_capital, # 初始资金
+            'final_value': final_value, # 最终资产价值
+            'total_return': total_return, # 总收益率
+            'annualized_return': annualized_return, # 年化收益率
+            'volatility': volatility, # 年化波动率
+            'max_drawdown': max_drawdown, # 最大回撤
+            'sharpe_ratio': sharpe_ratio, # 夏普比率
+            'max_drawdown_recovery_days': max_drawdown_recovery_days # 最大回撤修复天数
         }
         
-        print(f"回测完成! 最终资产价值: ${portfolio_results['portfolio_value'].iloc[-1]:,.2f}")
+        print(f"回测完成! 最终资产价值: ¥{portfolio_values.iloc[-1]:,.2f}")
         return results
     
-    def _calculate_portfolio_performance(self, 
-                                       price_data: pd.DataFrame,
-                                       positions: pd.Series,
-                                       symbols: List[str],
-                                       signals: pd.Series = None) -> Dict:
+    def _run_single_stock_backtest(self,
+                             symbol: str,
+                             price_data: pd.DataFrame,
+                             stock: Stock) -> Dict[str, Any]:
         """
-        计算投资组合表现
+        运行单只股票回测
         
         Args:
+            symbol: 股票代码
             price_data: 价格数据
-            positions: 持仓信号
-            symbols: 股票代码
+            stock: 股票实例
             
         Returns:
-            包含投资组合表现的字典
+            回测结果字典
         """
-        # 对齐数据
-        common_dates = price_data.index.intersection(positions.index)
-        price_data = price_data.loc[common_dates]
-        positions = positions.loc[common_dates]
+        # 生成交易信号 - 新的信号包含了交易量信息
+        signals = stock.get_signals(price_data)
+        # 获取交易金额 - 现在直接使用信号中的交易量信息
+        trade_amounts = stock.get_trade_amounts(price_data, signals)
         
         # 初始化变量
-        cash = self.initial_capital
-        holdings = {symbol: 0.0 for symbol in symbols}
-        portfolio_values = []
-        cash_history = []
-        holdings_history = []
-        trades = []
+        cash = stock.max_investment  # 使用最大投资资金作为初始现金
+        portfolio_values = [] # 记录每日总资产价值
+        cash_history = [] # 记录每日现金
+        holdings_history = [] # 记录每日持仓价值
+        holdings_shares_history = []  # 记录每日持仓份额
+        trades = []  # 初始化交易记录
         
-        # 逐日计算
-        for date in price_data.index:
-            current_prices = price_data.loc[date]
-            target_position = positions.loc[date]
+        # 初始持仓份额（如果有初始投资，则转换为份额）
+        holdings_shares = 0
+        initial_investment = stock.initial_investment
+        print(f"初始投资: {initial_investment}")
+        if initial_investment > 0:
+            # 计算初始持仓份额
+            initial_price = price_data.iloc[0]['Close']
             
-            # 检查是否有交易信号
-            has_signal = False
-            if signals is not None and date in signals.index:
-                has_signal = signals.loc[date] != 0
+            # 计算最大可购买的整数股数，考虑手续费
+            # 公式：shares * price * (1 + fee_rate) <= initial_investment
+            # 即：shares <= initial_investment / (price * (1 + fee_rate))
+            holdings_shares = int(initial_investment / (initial_price * (1 + stock.fee_rate)))
+            
+            # 实际购买金额
+            actual_investment = holdings_shares * initial_price
+            # 计算手续费
+            commission = actual_investment * stock.fee_rate
+            
+            # 记录初始购买交易
+            trade_date = price_data.index[0]
+            trades.append({
+                'date': trade_date,
+                'symbol': symbol,
+                'shares': holdings_shares,  # 整数股数
+                'price': initial_price,
+                'value': actual_investment,
+                'commission': commission,  # 标准手续费
+                'type': 'buy'
+            })
+            
+            # 从现金中扣除实际投资和手续费
+            total_cost = actual_investment + commission
+            cash -= total_cost
+            
+            print(f"初始持仓: {symbol} - {holdings_shares}股, 价格: ¥{initial_price:.2f}, 实际金额: ¥{actual_investment:.2f}, 手续费: ¥{commission:.2f}")
+        
+        # 逐日回测
+        for date in price_data.index:
+            current_price = price_data.loc[date, 'Close']
+            signal = signals.loc[date]
+            trade_amount = trade_amounts.loc[date]
             
             # 计算当前持仓价值
-            current_holdings_value = sum(
-                holdings[symbol] * current_prices[symbol] 
-                for symbol in symbols
-            )
+            holdings_value = holdings_shares * current_price
             
-            # 计算目标持仓
-            total_value = cash + current_holdings_value
-            target_holdings_value = total_value * target_position
-            
-            # 执行交易 - 支持单股票和多股票组合
-            if len(symbols) == 1:
-                # 单股票策略
-                symbol = symbols[0]
-                current_price = current_prices[symbol]
+            # 执行交易
+            if signal != 0 and trade_amount > 0:
                 
-                # 计算需要调整的股数
-                current_shares = holdings[symbol]
-                target_shares = target_holdings_value / current_price if current_price > 0 else 0
-                shares_to_trade = target_shares - current_shares
-                
-                # 只在有信号时才执行交易（对于定投策略）
-                if abs(shares_to_trade) > 0.001 and has_signal:
-                    # 执行交易
-                    trade_value = shares_to_trade * current_price
-                    commission = abs(trade_value) * self.commission_rate
+                # 只有当交易金额大于最小交易金额时才执行交易
+                if signal > 0:  # 买入信号 - 现在signal是净交易量
+                    # 计算最大可购买的整数股数，考虑手续费
+                    # 公式：shares * price * (1 + fee_rate) <= trade_amount
+                    # 即：shares <= trade_amount / (price * (1 + fee_rate))
+                    # 同时不能超过可用现金
+                    max_shares_by_trade_amount = trade_amount / (current_price * (1 + stock.fee_rate))
+                    max_shares_by_cash = cash / (current_price * (1 + stock.fee_rate))
+                    max_shares = min(max_shares_by_trade_amount, max_shares_by_cash)
+                    integer_shares = int(max_shares)  # 取整数部分
+
+                else:  # 卖出信号 - 现在signal是负值，表示净卖出量
+                    # 计算可卖出的最大整数股数
+                    max_shares = min(holdings_shares, trade_amount / current_price)
+                    integer_shares = -int(max_shares)  # 取整数部分，负值表示卖出
+                    
+                # 检查是否可以执行交易
+                if integer_shares != 0:  # 只有当整数股数
+                    # 计算交易金额和手续费
+                    trade_value = integer_shares * current_price
+                    commission = abs(trade_value) * stock.fee_rate
                     
                     # 更新现金和持仓
                     cash -= (trade_value + commission)
-                    holdings[symbol] = target_shares
+                    holdings_shares += integer_shares
                     
                     # 记录交易
                     trades.append({
                         'date': date,
                         'symbol': symbol,
-                        'shares': shares_to_trade,
+                        'shares': integer_shares,
                         'price': current_price,
                         'value': trade_value,
                         'commission': commission,
-                        'type': 'buy' if shares_to_trade > 0 else 'sell'
-                    })
-            else:
-                # 多股票组合策略 - 等权重分配
-                if target_position > 0:  # 只有当信号为正时才执行交易
-                    # 计算每只股票的目标分配金额（等权重）
-                    per_stock_target = target_holdings_value / len(symbols)
-                    
-                    total_commission = 0
-                    for symbol in symbols:
-                        if symbol in current_prices and current_prices[symbol] > 0:
-                            current_price = current_prices[symbol]
-                            current_shares = holdings[symbol]
-                            current_value = current_shares * current_price
-                            
-                            # 计算目标股数
-                            target_shares = per_stock_target / current_price
-                            shares_to_trade = target_shares - current_shares
-                            
-                            if abs(shares_to_trade) > 0.001:  # 最小交易单位
-                                # 计算交易费用
-                                trade_value = shares_to_trade * current_price
-                                commission = abs(trade_value) * self.commission_rate
-                                total_commission += commission
-                                
-                                # 记录交易
-                                trades.append({
-                                    'date': date,
-                                    'symbol': symbol,
-                                    'shares': shares_to_trade,
-                                    'price': current_price,
-                                    'value': trade_value,
-                                    'commission': commission,
-                                    'type': 'buy' if shares_to_trade > 0 else 'sell'
-                                })
-                                
-                                # 更新持仓
-                                holdings[symbol] = target_shares
-                    
-                    # 更新现金
-                    total_investment = sum(holdings[symbol] * current_prices[symbol] 
-                                         for symbol in symbols if symbol in current_prices)
-                    cash = total_value - total_investment - total_commission
-                else:
-                    # 清空所有持仓
-                    total_commission = 0
-                    for symbol in symbols:
-                        if holdings[symbol] > 0 and symbol in current_prices:
-                            current_price = current_prices[symbol]
-                            shares_to_sell = holdings[symbol]
-                            
-                            if shares_to_sell > 0.001:
-                                trade_value = shares_to_sell * current_price
-                                commission = trade_value * self.commission_rate
-                                total_commission += commission
-                                
-                                # 记录交易
-                                trades.append({
-                                    'date': date,
-                                    'symbol': symbol,
-                                    'shares': -shares_to_sell,
-                                    'price': current_price,
-                                    'value': -trade_value,
-                                    'commission': commission,
-                                    'type': 'sell'
-                                })
-                                
-                                # 清空持仓
-                                holdings[symbol] = 0
-                    
-                    # 更新现金
-                    total_sale_value = sum(holdings[symbol] * current_prices[symbol] 
-                                         for symbol in symbols if symbol in current_prices)
-                    cash = total_value - total_sale_value - total_commission
-            
-            # 重新计算持仓价值
-            holdings_value = sum(
-                holdings[symbol] * current_prices[symbol] 
-                for symbol in symbols
-            )
+                        'type': 'buy' if integer_shares > 0 else 'sell'
+                    })    
+            # 记录每日数据
+            holdings_value = holdings_shares * current_price  # 重新计算当前持仓价值
+            portfolio_value = cash + holdings_value  # 计算总资产价值
             
             # 记录历史数据
-            portfolio_value = cash + holdings_value
             portfolio_values.append(portfolio_value)
             cash_history.append(cash)
             holdings_history.append(holdings_value)
+            holdings_shares_history.append(holdings_shares)
         
-        # 转换为Series
+        # 转换为Series和DataFrame
         portfolio_series = pd.Series(portfolio_values, index=price_data.index)
         cash_series = pd.Series(cash_history, index=price_data.index)
         holdings_series = pd.Series(holdings_history, index=price_data.index)
+        holdings_shares_series = pd.Series(holdings_shares_history, index=price_data.index)
+        
+        # Debug: Display holdings_series content
+        print("### Debug: holdings_shares_series 内容")
+        print(holdings_shares_series)
         
         # 计算收益率
         returns = portfolio_series.pct_change().dropna()
@@ -313,111 +360,18 @@ class BacktestEngine:
         positions_df = pd.DataFrame(index=price_data.index)
         positions_df['cash'] = cash_series
         positions_df['holdings'] = holdings_series
+        positions_df['shares'] = holdings_shares_series
         positions_df['total'] = portfolio_series
+        
+        # Debug: Display positions_df content
+        print("### Debug1: positions_df 内容")
+        print(positions_df)
         
         return {
             'portfolio_value': portfolio_series,
             'returns': returns,
             'positions': positions_df,
-            'trades': trades
-        }
-    
-    def run_multiple_strategies(self,
-                              symbols: List[str],
-                              strategies: List[BaseStrategy],
-                              start_date: str,
-                              end_date: str,
-                              benchmark: str = None) -> Dict[str, Any]:
-        """
-        运行多个策略对比
-        
-        Args:
-            symbols: 股票代码列表
-            strategies: 策略列表
-            start_date: 开始日期
-            end_date: 结束日期
-            benchmark: 基准指数
-            
-        Returns:
-            包含所有策略结果的字典
-        """
-        results = {}
-        
-        for strategy in strategies:
-            strategy_result = self.run_backtest(
-                symbols, strategy, start_date, end_date, benchmark
-            )
-            results[strategy.name] = strategy_result
-        
-        return results
-    
-    def optimize_strategy(self,
-                         symbols: List[str],
-                         strategy_name: str,
-                         param_grid: Dict[str, List],
-                         start_date: str,
-                         end_date: str,
-                         metric: str = 'sharpe_ratio') -> Dict:
-        """
-        策略参数优化
-        
-        Args:
-            symbols: 股票代码
-            strategy_name: 策略名称
-            param_grid: 参数网格
-            start_date: 开始日期
-            end_date: 结束日期
-            metric: 优化指标
-            
-        Returns:
-            最优参数和结果
-        """
-        from itertools import product
-        from performance import PerformanceAnalyzer
-        
-        # 生成参数组合
-        param_names = list(param_grid.keys())
-        param_values = list(param_grid.values())
-        param_combinations = list(product(*param_values))
-        
-        best_score = float('-inf')
-        best_params = None
-        best_result = None
-        
-        print(f"开始参数优化，共{len(param_combinations)}种组合...")
-        
-        for i, param_combo in enumerate(param_combinations):
-            # 构建参数字典
-            params = dict(zip(param_names, param_combo))
-            
-            try:
-                # 创建策略
-                strategy = StrategyFactory.create_strategy(strategy_name, params)
-                
-                # 运行回测
-                result = self.run_backtest(symbols, strategy, start_date, end_date)
-                
-                # 计算性能指标
-                analyzer = PerformanceAnalyzer()
-                metrics = analyzer.calculate_performance_metrics(result['returns'])
-                
-                # 获取目标指标
-                score = metrics.get(metric, float('-inf'))
-                
-                # 更新最优结果
-                if score > best_score:
-                    best_score = score
-                    best_params = params
-                    best_result = result
-                
-                print(f"进度: {i+1}/{len(param_combinations)}, 当前{metric}: {score:.4f}")
-                
-            except Exception as e:
-                print(f"参数组合 {params} 失败: {str(e)}")
-                continue
-        
-        return {
-            'best_params': best_params,
-            'best_score': best_score,
-            'best_result': best_result
+            'trades': trades,
+            'signals': signals,
+            'price_data': price_data
         }
