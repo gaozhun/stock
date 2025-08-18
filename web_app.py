@@ -34,6 +34,186 @@ st.set_page_config(
 # 自定义CSS
 st.markdown("""
 <style>
+    /* 隐藏Streamlit默认页面元素 */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* 卡片样式 */
+    .stock-card {
+        background-color: #f8f9fa;
+        padding: 1.2rem;
+        border-radius: 0.7rem;
+        border-left: 5px solid #4e73df;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15);
+    }
+    .strategy-card {
+        background-color: #ffffff;
+        padding: 0.8rem 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid #e3e6f0;
+        margin-bottom: 0.8rem;
+        box-shadow: 0 0.1rem 0.3rem rgba(0,0,0,.05);
+        transition: all 0.2s ease-in-out;
+    }
+    .strategy-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 0.3rem 0.6rem rgba(0,0,0,.1);
+    }
+    .buy-strategy {
+        border-left: 4px solid #1cc88a;
+    }
+    .sell-strategy {
+        border-left: 4px solid #e74a3b;
+    }
+    .metric-card {
+        background-color: #f8f9fa;
+        padding: 1.2rem;
+        border-radius: 0.7rem;
+        box-shadow: 0 0.15rem 0.5rem 0 rgba(58, 59, 69, 0.15);
+    }
+    .success-metric {
+        border-left: 5px solid #1cc88a;
+    }
+    .warning-metric {
+        border-left: 5px solid #f6c23e;
+    }
+    .danger-metric {
+        border-left: 5px solid #e74a3b;
+    }
+    
+    /* 按钮样式 */
+    .stButton>button {
+        border-radius: 0.5rem;
+        font-weight: 500;
+        transition: all 0.2s;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 0.3rem 0.6rem rgba(0,0,0,.1);
+    }
+    
+    /* 策略模态窗口样式 */
+    .modal-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: rgba(0,0,0,0.5);
+        backdrop-filter: blur(2px);
+        z-index: 9999;
+        overflow-y: auto;
+        padding: 2rem;
+    }
+    
+    .strategy-modal {
+        background-color: white;
+        padding: 2rem;
+        border-radius: 1rem;
+        box-shadow: 0 0.5rem 2rem rgba(0,0,0,0.3);
+        max-width: 800px;
+        width: 100%;
+        position: relative;
+        z-index: 10000;
+        margin: auto;
+        animation: modalFadeIn 0.3s ease-out;
+    }
+    
+    @keyframes modalFadeIn {
+        from {
+            opacity: 0;
+            transform: translateY(-20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+    
+    .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+        border-bottom: 1px solid #e3e6f0;
+        padding-bottom: 1rem;
+    }
+    
+    .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 1rem;
+        border-top: 1px solid #e3e6f0;
+        padding-top: 1rem;
+    }
+    
+    .modal-close-btn {
+        position: absolute;
+        top: 1rem;
+        right: 1rem;
+        background: none;
+        border: none;
+        font-size: 1.5rem;
+        cursor: pointer;
+        color: #666;
+        transition: color 0.2s;
+    }
+    
+    .modal-close-btn:hover {
+        color: #333;
+    }
+    
+    /* 当模态窗口打开时，禁止页面滚动 */
+    .no-scroll {
+        overflow: hidden !important;
+    }
+    
+    /* 标签页样式 */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2rem;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 3rem;
+        white-space: pre-wrap;
+        border-radius: 4px 4px 0px 0px;
+        padding: 0px 1rem;
+        font-weight: 500;
+    }
+    
+    /* 表格样式 */
+    .dataframe {
+        border-collapse: collapse;
+        margin: 1rem 0;
+        font-size: 0.9rem;
+        border-radius: 0.5rem;
+        overflow: hidden;
+        box-shadow: 0 0.15rem 0.5rem rgba(0,0,0,0.1);
+    }
+    .dataframe thead th {
+        background-color: #4e73df;
+        color: white;
+        font-weight: 500;
+        text-align: left;
+        padding: 0.75rem 1rem;
+    }
+    .dataframe tbody tr:nth-of-type(even) {
+        background-color: #f8f9fa;
+    }
+    .dataframe tbody tr:hover {
+        background-color: #eaecf4;
+    }
+    .dataframe td {
+        padding: 0.75rem 1rem;
+        border-top: 1px solid #e3e6f0;
+    }
+</style>
+<style>
     .stock-card {
         background-color: #f0f2f6;
         padding: 1rem;
@@ -90,9 +270,9 @@ def run_backtest_cached(_portfolio: Portfolio,
                        symbols: List[str], start_date: str, end_date: str):
     """回测函数"""
     engine = BacktestEngine()
-    
-    # 打印调试信息
-    print(f"运行回测: 股票数量={len(symbols)}, 开始日期={start_date}, 结束日期={end_date}")
+    print(f"股票数量: {len(symbols)}")  
+    print(f"开始日期: {start_date}")
+    print(f"结束日期: {end_date}")
     print(f"Portfolio对象中的股票数量: {len(_portfolio.stocks)}")
     for symbol, stock in _portfolio.stocks.items():
         print(f"股票 {symbol}: 买入策略={len(stock.buy_strategies)}, 卖出策略={len(stock.sell_strategies)}")
@@ -115,6 +295,7 @@ def run_benchmark_backtest(symbol: str, start_date: str, end_date: str, initial_
     benchmark_portfolio.add_stock(symbol, initial_investment=initial_capital, max_investment=initial_capital)
     
     benchmark_data = get_benchmark_data(symbol, start_date, end_date)
+    print(benchmark_data)
     # 获取结果
     results = engine.run_portfolio_backtest(
         portfolio=benchmark_portfolio,
@@ -147,6 +328,16 @@ def run_buy_hold_backtest(symbols: List[str], start_date: str, end_date: str, in
     
     return results
 
+
+def open_strategy_modal(stock_code: str):
+    """打开添加策略的模态窗口"""
+    # 使用session_state来跟踪模态窗口的状态
+    modal_key = f"strategy_modal_{stock_code}"
+    if modal_key not in st.session_state:
+        st.session_state[modal_key] = False
+    
+    # 返回打开模态窗口的按钮
+    return st.button("➕ 添加策略", key=f"open_modal_{stock_code}")
 
 def render_strategy_params(stock_code: str, strategy_name: str, signal_type: SignalType) -> Dict:
     """
@@ -390,249 +581,153 @@ def render_strategy_params(stock_code: str, strategy_name: str, signal_type: Sig
 def render_stock_strategy_card(stock_code: str, portfolio: Portfolio):
     """渲染单只股票的策略卡片"""
     with st.container():
+        # 股票卡片标题
         st.markdown(f"""
         <div class="stock-card">
-            <h4>{stock_code}</h4>
+            <h4>📊 {stock_code}</h4>
         </div>
         """, unsafe_allow_html=True)
         
-        # 初始持仓金额输入框
-        initial_investment = st.number_input(
-            "初始持仓金额 (¥)",  # 明确单位为人民币
-            min_value=0,  # 允许初始投资金额为零
-            value=int(portfolio.stocks[stock_code].initial_investment),
-            step=1000,
-            key=f"initial_investment_{stock_code}"
-        )
-        portfolio.update_stock_investment(stock_code, initial_investment)
+        # 创建两列布局
+        col1, col2 = st.columns(2)
         
-        # 最大投资资金输入框
-        max_investment = st.number_input(
-            "最大投资资金 (¥)",
-            min_value=1000,
-            value=int(portfolio.stocks[stock_code].max_investment),
-            step=1000,
-            key=f"max_investment_{stock_code}"
-        )
-        portfolio.update_stock_max_investment(stock_code, max_investment)
-        
-        # 添加策略按钮
-        col1, col2 = st.columns([3, 1])
+        # 左侧列 - 基本参数
         with col1:
-            strategy_type = st.selectbox(
-                "选择策略类型",
-                options=['time_based', 'macd_pattern', 'ma_touch'],
-                format_func=lambda x: {'time_based': '时间条件单', 'macd_pattern': 'MACD形态', 'ma_touch': '均线触碰'}.get(x, x),
-                key=f"strategy_type_{stock_code}"
+            # 初始持仓金额输入框
+            initial_investment = st.number_input(
+                "初始持仓金额 (¥)",  # 明确单位为人民币
+                min_value=0,  # 允许初始投资金额为零
+                value=int(portfolio.stocks[stock_code].initial_investment),
+                step=1000,
+                key=f"initial_investment_{stock_code}"
             )
+            portfolio.update_stock_investment(stock_code, initial_investment)
         
+        # 右侧列 - 最大投资
         with col2:
-            signal_type = st.selectbox(
-                "信号类型",
-                options=[SignalType.BUY, SignalType.SELL],
-                format_func=lambda x: "买入" if x == SignalType.BUY else "卖出",
-                key=f"signal_type_{stock_code}"
+            # 最大投资资金输入框
+            max_investment = st.number_input(
+                "最大投资资金 (¥)",
+                min_value=1000,
+                value=int(portfolio.stocks[stock_code].max_investment),
+                step=1000,
+                key=f"max_investment_{stock_code}"
             )
-        
-        # 策略参数
-        strategy_params = render_strategy_params(stock_code, strategy_type, signal_type)
+            portfolio.update_stock_max_investment(stock_code, max_investment)
         
         # 添加策略按钮
-        if st.button("添加策略", key=f"add_strategy_{stock_code}"):
-            strategy = Strategy(
-                name=f"{strategy_type}_{signal_type.value}_{len(portfolio.stocks[stock_code].buy_strategies + portfolio.stocks[stock_code].sell_strategies)}",
-                type=strategy_type,
-                signal_type=signal_type,
-                params=strategy_params
-            )
-            # 确保添加策略直接修改session_state中的portfolio
-            portfolio.add_strategy(stock_code, strategy)
-            print(f"✅ 策略 {strategy.name} {strategy.type} {strategy.signal_type} 添加成功！")
-            print(portfolio.stocks[stock_code].buy_strategies)
-            print(portfolio.stocks[stock_code].sell_strategies)
-            st.success(f"✅ 策略 {strategy.name} 添加成功！")
-            # 强制页面重新加载
-            st.rerun()
+        if open_strategy_modal(stock_code):
+            st.session_state[f"strategy_modal_{stock_code}"] = True
+        
+        # 如果模态窗口打开，显示策略添加界面
+        if st.session_state.get(f"strategy_modal_{stock_code}", False):
+            # 使用Streamlit的expander组件创建一个可折叠的区域
+            with st.expander("添加新策略", expanded=True):
+                # 添加一个带样式的卡片作为策略添加区域
+                
+                # 策略类型和信号类型选择
+                col_a, col_b = st.columns([3, 1])
+                with col_a:
+                    strategy_type = st.selectbox(
+                        "选择策略类型",
+                        options=['time_based', 'macd_pattern', 'ma_touch'],
+                        format_func=lambda x: {'time_based': '时间条件单', 'macd_pattern': 'MACD形态', 'ma_touch': '均线触碰'}.get(x, x),
+                        key=f"strategy_type_{stock_code}"
+                    )
+                
+                with col_b:
+                    signal_type = st.selectbox(
+                        "信号类型",
+                        options=[SignalType.BUY, SignalType.SELL],
+                        format_func=lambda x: "买入" if x == SignalType.BUY else "卖出",
+                        key=f"signal_type_{stock_code}"
+                    )
+                
+                # 策略参数
+                strategy_params = render_strategy_params(stock_code, strategy_type, signal_type)
+
+                # 添加和取消按钮
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("✅ 确认添加", key=f"add_strategy_{stock_code}", use_container_width=True):
+                        strategy = Strategy(
+                            name=f"{strategy_type}_{signal_type.value}_{len(portfolio.stocks[stock_code].buy_strategies + portfolio.stocks[stock_code].sell_strategies)}",
+                            type=strategy_type,
+                            signal_type=signal_type,
+                            params=strategy_params
+                        )
+                        # 确保添加策略直接修改session_state中的portfolio
+                        portfolio.add_strategy(stock_code, strategy)
+                        st.write(f"<script>console.log('✅ 策略 {strategy.name} {strategy.type} {strategy.signal_type} 添加成功！');</script>", unsafe_allow_html=True)
+                        st.write(f"<script>console.log({str(portfolio.stocks[stock_code].buy_strategies)});</script>", unsafe_allow_html=True)
+                        st.write(f"<script>console.log({str(portfolio.stocks[stock_code].sell_strategies)});</script>", unsafe_allow_html=True)
+                        
+                        st.success(f"✅ 策略 {strategy.name} 添加成功！")
+                        # 关闭模态窗口
+                        st.session_state[f"strategy_modal_{stock_code}"] = False
+                        # 强制页面重新加载
+                        st.rerun()
+                
+                with col_b:
+                    if st.button("❌ 取消", key=f"cancel_strategy_{stock_code}", use_container_width=True):
+                        # 关闭模态窗口
+                        st.session_state[f"strategy_modal_{stock_code}"] = False
+                        st.rerun()
+                
+                # 关闭div标签
+                st.markdown("</div>", unsafe_allow_html=True)
         
         # 显示已添加的策略
         if stock_code in portfolio.stocks:
             stock = portfolio.stocks[stock_code]
-            for i, strategy in enumerate(stock.buy_strategies + stock.sell_strategies):
-                if not strategy.enabled:
-                    continue
-                with st.container():
-                    st.markdown(f"""
-                    <div class="strategy-card {'buy-strategy' if strategy.signal_type == SignalType.BUY else 'sell-strategy'}">
-                        <h4>{strategy.name} ({'买入' if strategy.signal_type == SignalType.BUY else '卖出'})</h4>
-                        <p>{str(strategy.params)}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # 删除策略按钮
-                    if st.button("删除策略", key=f"delete_strategy_{stock_code}_{i}"):
-                        # 保存策略名称和类型，以便在回调中使用
-                        strategy.enabled = False
-                        st.success(f"✅ 策略 {strategy.name} 删除成功！")
-                        # 强制页面重新加载
-                        st.rerun()
+            enabled_strategies = [s for s in stock.buy_strategies + stock.sell_strategies if s.enabled]
+            
+            if enabled_strategies:
+                st.markdown("### 已添加策略")
+                
+                # 使用列布局显示策略卡片
+                cols = st.columns(2)  # 每行两个策略卡片
+                
+                for i, strategy in enumerate(enabled_strategies):
+                    with cols[i % 2]:
+                        # 获取策略类型的中文名称
+                        strategy_type_name = {
+                            'time_based': '时间条件单', 
+                            'macd_pattern': 'MACD形态', 
+                            'ma_touch': '均线触碰'
+                        }.get(strategy.type, strategy.type)
+                        
+                        # 格式化策略参数显示
+                        formatted_params = []
+                        for k, v in strategy.params.items():
+                            if isinstance(v, list):
+                                formatted_params.append(f"{k}: {', '.join(map(str, v))}")
+                            else:
+                                formatted_params.append(f"{k}: {v}")
+                        
+                        # 使用更美观的卡片显示策略
+                        st.markdown(f"""
+                        <div class="strategy-card {'buy-strategy' if strategy.signal_type == SignalType.BUY else 'sell-strategy'}">
+                            <h4>{'📈 买入' if strategy.signal_type == SignalType.BUY else '📉 卖出'} - {strategy_type_name}</h4>
+                            <p>{'; '.join(formatted_params)}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # 删除策略按钮
+                        if st.button("🗑️ 删除", key=f"delete_strategy_{stock_code}_{i}"):
+                            # 保存策略名称和类型，以便在回调中使用
+                            strategy.enabled = False
+                            st.success(f"✅ 策略 {strategy.name} 删除成功！")
+                            # 强制页面重新加载
+                            st.rerun()
 
 def display_results(results):
     """显示回测结果"""
-    st.subheader("回测结果")
-    # 显示收益分析部分
-    st.subheader("收益分析")
+    st.header("📊 回测结果")
     
-    # 创建两列布局
-    col1, col2 = st.columns(2)
-    
-    # 第一列显示基本收益信息
-    with col1:
-        st.write("总初始资金: ¥{:,.2f}".format(results['initial_capital']))
-        st.write("最终资产价值: ¥{:,.2f}".format(results['final_value']))
-        st.write("总收益率: {:.2%}".format(results['total_return']))
-        
-        # 直接使用回测引擎计算的年化收益率
-        if 'annualized_return' in results:
-            st.write("年化收益率: {:.2%}".format(results['annualized_return']))
-
-
-    
-    # 第二列显示风险指标
-    with col2:
-        # 直接使用回测引擎计算的风险指标
-        if 'max_drawdown' in results:
-            st.write("最大回撤: {:.2%}".format(results['max_drawdown']))
-
-        
-        if 'sharpe_ratio' in results:
-            st.write("夏普比率: {:.2f}".format(results['sharpe_ratio']))
-
-        
-        if 'volatility' in results:
-            st.write("年化波动率: {:.2%}".format(results['volatility']))
- 
-        
-        if 'max_drawdown_recovery_days' in results:
-            st.write("最大回撤修复天数: {} 天".format(results['max_drawdown_recovery_days']))
-    
-    # 添加与基准和买入持有的对比
-    if st.session_state.get('benchmark_results') and st.session_state.get('buy_hold_results'):
-        st.subheader("策略对比分析")
-        
-        # 创建对比表格
-        comparison_data = []
-        
-        # 策略数据 - 使用原始结果
-        strategy_total_return = results['total_return']
-        strategy_annualized = results.get('annualized_return', 0)
-        strategy_volatility = results.get('volatility', 0)
-        strategy_sharpe = results.get('sharpe_ratio', 0)
-        strategy_max_dd = results.get('max_drawdown', 0)
-        
-        # 基准数据 - 使用独立运行的基准回测结果
-        benchmark_results = st.session_state.benchmark_results
-        benchmark_total_return = benchmark_results['total_return']
-        benchmark_annualized = benchmark_results.get('annualized_return', 0)
-        benchmark_volatility = benchmark_results.get('volatility', 0)
-        benchmark_sharpe = benchmark_results.get('sharpe_ratio', 0)
-        benchmark_max_dd = benchmark_results.get('max_drawdown', 0)
-        
-        # 买入并持有策略数据 - 使用独立运行的买入并持有回测结果
-        buy_hold_results = st.session_state.buy_hold_results
-        buy_hold_total_return = buy_hold_results['total_return']
-        buy_hold_annualized = buy_hold_results.get('annualized_return', 0)
-        buy_hold_volatility = buy_hold_results.get('volatility', 0)
-        buy_hold_sharpe = buy_hold_results.get('sharpe_ratio', 0)
-        buy_hold_max_dd = buy_hold_results.get('max_drawdown', 0)
-        
-        # 获取最大回撤修复天数
-        strategy_recovery_days = results.get('max_drawdown_recovery_days', 0)
-        benchmark_recovery_days = benchmark_results.get('max_drawdown_recovery_days', 0)
-        buy_hold_recovery_days = buy_hold_results.get('max_drawdown_recovery_days', 0)
-        
-        # 添加数据到对比表
-        comparison_data.append({
-            '策略': '回测策略',
-            '总收益率': f"{strategy_total_return:.2%}",
-            '年化收益率': f"{strategy_annualized:.2%}",
-            '年化波动率': f"{strategy_volatility:.2%}",
-            '夏普比率': f"{strategy_sharpe:.2f}",
-            '最大回撤': f"{strategy_max_dd:.2%}",
-            '回撤修复天数': f"{strategy_recovery_days}"
-        })
-        
-        comparison_data.append({
-            '策略': st.session_state.get('benchmark_name', st.session_state.benchmark_symbol),
-            '总收益率': f"{benchmark_total_return:.2%}",
-            '年化收益率': f"{benchmark_annualized:.2%}",
-            '年化波动率': f"{benchmark_volatility:.2%}",
-            '夏普比率': f"{benchmark_sharpe:.2f}",
-            '最大回撤': f"{benchmark_max_dd:.2%}",
-            '回撤修复天数': f"{benchmark_recovery_days}"
-        })
-        
-        comparison_data.append({
-            '策略': '买入并持有',
-            '总收益率': f"{buy_hold_total_return:.2%}",
-            '年化收益率': f"{buy_hold_annualized:.2%}",
-            '年化波动率': f"{buy_hold_volatility:.2%}",
-            '夏普比率': f"{buy_hold_sharpe:.2f}",
-            '最大回撤': f"{buy_hold_max_dd:.2%}",
-            '回撤修复天数': f"{buy_hold_recovery_days}"
-        })
-        
-        # 显示对比表格
-        comparison_df = pd.DataFrame(comparison_data)
-        st.table(comparison_df)
-    # 显示交易记录
-    st.subheader("交易记录")
-    if results['trades']:
-        # 直接显示原始交易记录
-        st.write(f"交易记录总数: {len(results['trades'])}")
-    
-        # 创建交易数据框
-        trades_df = pd.DataFrame(results['trades'])
-        
-        # 重命名列
-        trades_df.rename(columns={
-            'date': '日期',
-            'symbol': '股票代码',
-            'shares': '交易股数',
-            'price': '价格',
-            'value': '交易金额',
-            'commission': '手续费',
-            'type': '类型'
-        }, inplace=True)
-        
-        # 确保日期列是日期时间类型
-        if not pd.api.types.is_datetime64_any_dtype(trades_df['日期']):
-            trades_df['日期'] = pd.to_datetime(trades_df['日期'])
-        
-        # 添加交易类型的中文显示
-        trades_df['交易类型'] = trades_df['类型'].map({'buy': '买入', 'sell': '卖出'})
-        
-        # 统计交易信息
-        buy_count = len(trades_df[trades_df['类型'] == 'buy'])
-        sell_count = len(trades_df[trades_df['类型'] == 'sell'])
-        st.write(f"总交易次数: {len(trades_df)}, 买入次数: {buy_count}, 卖出次数: {sell_count}")
-        
-        # 显示交易记录表格
-        st.dataframe(trades_df[['日期', '股票代码', '交易类型', '交易股数', '价格', '交易金额', '手续费']], use_container_width=True)
-        
-        # 导出交易记录按钮
-        csv = trades_df.to_csv().encode('utf-8')
-        st.download_button(
-            label="下载交易记录CSV",
-            data=csv,
-            file_name='交易记录.csv',
-            mime='text/csv',
-        )
-
-    else:
-        st.write("无交易记录")
-    
+    # 先显示图表部分
     # 显示投资组合价值变化
-    st.subheader("投资组合价值变化")
+    st.subheader("📈 投资组合价值变化")
     if not results['portfolio_value'].empty:
         # 创建数据框
         portfolio_value_df = pd.DataFrame(results['portfolio_value'], columns=['投资组合价值'])
@@ -1067,16 +1162,169 @@ def display_results(results):
             
             # 显示回撤分析图
             st.plotly_chart(fig_drawdown, use_container_width=True)
-        
-
     else:
         st.write("无投资组合价值变化数据")
+        
+    # 收益分析部分
+    st.subheader("📰 收益分析")
+    
+    # 创建两列布局
+    col1, col2 = st.columns(2)
+    
+    # 第一列显示基本收益信息
+    with col1:
+        st.write("总初始资金: ¥{:,.2f}".format(results['initial_capital']))
+        st.write("最终资产价值: ¥{:,.2f}".format(results['final_value']))
+        st.write("总收益率: {:.2%}".format(results['total_return']))
+        
+        # 直接使用回测引擎计算的年化收益率
+        if 'annualized_return' in results:
+            st.write("年化收益率: {:.2%}".format(results['annualized_return']))
 
+
+    
+    # 第二列显示风险指标
+    with col2:
+        # 直接使用回测引擎计算的风险指标
+        if 'max_drawdown' in results:
+            st.write("最大回撤: {:.2%}".format(results['max_drawdown']))
+
+        
+        if 'sharpe_ratio' in results:
+            st.write("夏普比率: {:.2f}".format(results['sharpe_ratio']))
+
+        
+        if 'volatility' in results:
+            st.write("年化波动率: {:.2%}".format(results['volatility']))
+ 
+        
+        if 'max_drawdown_recovery_days' in results:
+            st.write("最大回撤修复天数: {} 天".format(results['max_drawdown_recovery_days']))
+    
+    # 添加与基准和买入持有的对比
+    if st.session_state.get('benchmark_results') and st.session_state.get('buy_hold_results'):
+        st.subheader("策略对比分析")
+        
+        # 创建对比表格
+        comparison_data = []
+        
+        # 策略数据 - 使用原始结果
+        strategy_total_return = results['total_return']
+        strategy_annualized = results.get('annualized_return', 0)
+        strategy_volatility = results.get('volatility', 0)
+        strategy_sharpe = results.get('sharpe_ratio', 0)
+        strategy_max_dd = results.get('max_drawdown', 0)
+        
+        # 基准数据 - 使用独立运行的基准回测结果
+        benchmark_results = st.session_state.benchmark_results
+        benchmark_total_return = benchmark_results['total_return']
+        benchmark_annualized = benchmark_results.get('annualized_return', 0)
+        benchmark_volatility = benchmark_results.get('volatility', 0)
+        benchmark_sharpe = benchmark_results.get('sharpe_ratio', 0)
+        benchmark_max_dd = benchmark_results.get('max_drawdown', 0)
+        
+        # 买入并持有策略数据 - 使用独立运行的买入并持有回测结果
+        buy_hold_results = st.session_state.buy_hold_results
+        buy_hold_total_return = buy_hold_results['total_return']
+        buy_hold_annualized = buy_hold_results.get('annualized_return', 0)
+        buy_hold_volatility = buy_hold_results.get('volatility', 0)
+        buy_hold_sharpe = buy_hold_results.get('sharpe_ratio', 0)
+        buy_hold_max_dd = buy_hold_results.get('max_drawdown', 0)
+        
+        # 获取最大回撤修复天数
+        strategy_recovery_days = results.get('max_drawdown_recovery_days', 0)
+        benchmark_recovery_days = benchmark_results.get('max_drawdown_recovery_days', 0)
+        buy_hold_recovery_days = buy_hold_results.get('max_drawdown_recovery_days', 0)
+        
+        # 添加数据到对比表
+        comparison_data.append({
+            '策略': '回测策略',
+            '总收益率': f"{strategy_total_return:.2%}",
+            '年化收益率': f"{strategy_annualized:.2%}",
+            '年化波动率': f"{strategy_volatility:.2%}",
+            '夏普比率': f"{strategy_sharpe:.2f}",
+            '最大回撤': f"{strategy_max_dd:.2%}",
+            '回撤修复天数': f"{strategy_recovery_days}"
+        })
+        
+        comparison_data.append({
+            '策略': st.session_state.get('benchmark_name', st.session_state.benchmark_symbol),
+            '总收益率': f"{benchmark_total_return:.2%}",
+            '年化收益率': f"{benchmark_annualized:.2%}",
+            '年化波动率': f"{benchmark_volatility:.2%}",
+            '夏普比率': f"{benchmark_sharpe:.2f}",
+            '最大回撤': f"{benchmark_max_dd:.2%}",
+            '回撤修复天数': f"{benchmark_recovery_days}"
+        })
+        
+        comparison_data.append({
+            '策略': '买入并持有',
+            '总收益率': f"{buy_hold_total_return:.2%}",
+            '年化收益率': f"{buy_hold_annualized:.2%}",
+            '年化波动率': f"{buy_hold_volatility:.2%}",
+            '夏普比率': f"{buy_hold_sharpe:.2f}",
+            '最大回撤': f"{buy_hold_max_dd:.2%}",
+            '回撤修复天数': f"{buy_hold_recovery_days}"
+        })
+        
+        # 显示对比表格
+        comparison_df = pd.DataFrame(comparison_data)
+        st.table(comparison_df)
+    # 显示收益分析部分
+    st.subheader("📰 收益分析")
+    
+    # 显示交易记录
+    st.subheader("📝 交易记录")
+    if results['trades']:
+        # 直接显示原始交易记录
+        st.write(f"交易记录总数: {len(results['trades'])}")
+    
+        # 创建交易数据框
+        trades_df = pd.DataFrame(results['trades'])
+        
+        # 重命名列
+        trades_df.rename(columns={
+            'date': '日期',
+            'symbol': '股票代码',
+            'shares': '交易股数',
+            'price': '价格',
+            'value': '交易金额',
+            'commission': '手续费',
+            'type': '类型'
+        }, inplace=True)
+        
+        # 确保日期列是日期时间类型
+        if not pd.api.types.is_datetime64_any_dtype(trades_df['日期']):
+            trades_df['日期'] = pd.to_datetime(trades_df['日期'])
+        
+        # 添加交易类型的中文显示
+        trades_df['交易类型'] = trades_df['类型'].map({'buy': '买入', 'sell': '卖出'})
+        
+        # 统计交易信息
+        buy_count = len(trades_df[trades_df['类型'] == 'buy'])
+        sell_count = len(trades_df[trades_df['类型'] == 'sell'])
+        st.write(f"总交易次数: {len(trades_df)}, 买入次数: {buy_count}, 卖出次数: {sell_count}")
+        
+        # 显示交易记录表格
+        st.dataframe(trades_df[['日期', '股票代码', '交易类型', '交易股数', '价格', '交易金额', '手续费']], use_container_width=True)
+        
+        # 导出交易记录按钮
+        csv = trades_df.to_csv().encode('utf-8')
+        st.download_button(
+            label="下载交易记录CSV",
+            data=csv,
+            file_name='交易记录.csv',
+            mime='text/csv',
+        )
+
+    else:
+        st.write("无交易记录")
 
 def main():
     """主函数"""
-    # 标题
+    # 标题和简介
     st.title("📈 股票回测系统")
+    st.markdown("""<div style='margin-bottom: 1.5rem;'>一个专业的股票策略回测平台，支持多种交易策略和详细的绩效分析。</div>""", unsafe_allow_html=True)
     # 侧边栏 - 参数设置
     with st.sidebar:
         st.header("📊 回测参数设置")
@@ -1211,23 +1459,28 @@ def main():
         
         # 显示进度
         with st.spinner("正在运行回测，请稍候..."):
-            # 调试日志：打印投资组合信息
-            st.write("### 调试信息")
-            st.write(f"投资组合中的股票数量: {len(st.session_state.portfolio.stocks)}")
+            # 调试日志：打印投资组合信息到
+            print(f"投资组合中的股票数量: {len(st.session_state.portfolio.stocks)}")
+            
             for symbol, stock in st.session_state.portfolio.stocks.items():
-                st.write(f"股票 {symbol}:")
-                st.write(f"  初始投资: {stock.initial_investment}")
-                st.write(f"  最大投资: {stock.max_investment}")
-                st.write(f"  买入策略数量: {stock.get_enabled_buy_strategie_number()}")
+                debug_info = f"""
+                股票 {symbol}:
+                  初始投资: {stock.initial_investment}
+                  最大投资: {stock.max_investment}
+                  买入策略数量: {stock.get_enabled_buy_strategie_number()}
+                """
+                print(debug_info)
                 for i, strategy in enumerate(stock.buy_strategies):
                     if strategy.enabled:
-                        st.write(f"    买入策略 {i+1}: {strategy.name}, 类型: {strategy.type}")
-                        st.write(f"    参数: {strategy.params}")
-                st.write(f"  卖出策略数量: {stock.get_enabled_sell_strategie_number()}")
+                        print(f"    买入策略 {i+1}: {strategy.name}, 类型: {strategy.type}")
+                        print(f"    参数: {strategy.params}")
+                
+                print(f"  卖出策略数量: {stock.get_enabled_sell_strategie_number()}")
+                
                 for i, strategy in enumerate(stock.sell_strategies):
                     if strategy.enabled:
-                        st.write(f"    卖出策略 {i+1}: {strategy.name}, 类型: {strategy.type}")
-                        st.write(f"    参数: {strategy.params}")
+                        print(f"    卖出策略 {i+1}: {strategy.name}, 类型: {strategy.type}")
+                        print(f"    参数: {strategy.params}")
             
             # 运行自定义策略回测
             results = run_backtest_cached(
