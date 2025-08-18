@@ -55,14 +55,15 @@ class Stock:
         Args:
             strategy: 策略配置
         """
-        print(f"### 调试信息 - 添加策略 {strategy.name} {strategy.type} {strategy.signal_type}")
-        print(f"  买入策略数量: {len(self.buy_strategies)}")
-        print(f"  卖出策略数量: {len(self.sell_strategies)}")
+
         if strategy.signal_type == SignalType.BUY:
             self.buy_strategies.append(strategy)
         else:
             self.sell_strategies.append(strategy)
-    
+        print(f"### 调试信息 - 添加策略 {strategy.name} {strategy.type} {strategy.signal_type}")
+        print(f"  买入策略数量: {len(self.buy_strategies)}")
+        print(f"  卖出策略数量: {len(self.sell_strategies)}")
+
     def remove_strategy(self, strategy_name: str) -> None:
         """
         移除策略
