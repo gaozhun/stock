@@ -39,14 +39,8 @@ def render_sidebar() -> tuple:
             # 基本参数
             st.subheader("基本设置")
             
-            # 选择输入模式
-            input_mode = st.radio(
-                "选择投资标的类型",
-                ["股票代码", "ETF选择", "混合输入"],
-                horizontal=True
-            )
-            
-            symbols = get_symbols_from_input_mode(input_mode)
+            # 获取证券列表
+            symbols = get_securities_from_sidebar()
             
             # 显示选择的标的信息
             if symbols:
@@ -65,54 +59,27 @@ def render_sidebar() -> tuple:
         st.error("渲染侧边栏时出错")
         return [], datetime.now() - timedelta(days=365), datetime.now(), 'sh000300'
 
-def get_symbols_from_input_mode(input_mode: str) -> list:
-    """根据输入模式获取股票代码列表"""
+def get_securities_from_sidebar() -> list:
+    """从侧边栏获取证券代码列表"""
     try:
-        if input_mode == "股票代码":
-            symbols_input = st.text_input(
-                "股票代码 (用逗号分隔)", 
-                value="000001,000002,000858",
-                help="输入A股代码，如: 000001,000002,000858"
-            )
-            symbols = [s.strip() for s in symbols_input.split(',') if s.strip()]
-            
-        elif input_mode == "ETF选择":
-            from config import ETF_CONFIG
-            
-            # ETF分类选择
-            etf_category = st.selectbox(
-                "选择ETF类别",
-                ["全部"] + list(ETF_CONFIG['etf_categories'].keys())
-            )
-            
-            # 获取对应的ETF列表
-            if etf_category == "全部":
-                available_etfs = ETF_CONFIG['popular_etfs']
-            else:
-                category_codes = ETF_CONFIG['etf_categories'][etf_category]
-                available_etfs = {code: ETF_CONFIG['popular_etfs'][code] for code in category_codes}
-            
-            # ETF多选
-            selected_etfs = st.multiselect(
-                f"选择ETF ({len(available_etfs)}只可选)",
-                options=list(available_etfs.keys()),
-                default=[list(available_etfs.keys())[0]] if available_etfs else [],
-                format_func=lambda x: f"{x}: {available_etfs.get(x, '')}"
-            )
-            symbols = selected_etfs
-            
-        else:  # 混合输入
-            symbols_input = st.text_input(
-                "股票/ETF代码 (用逗号分隔)", 
-                value="000001,510300,002594,159915",
-                help="可同时输入股票和ETF代码，如: 000001,510300,002594,159915"
-            )
-            symbols = [s.strip() for s in symbols_input.split(',') if s.strip()]
+        from ui_components import render_security_selector
         
-        return symbols
+        # 检查是否已初始化数据
+        if 'all_securities' not in st.session_state:
+            st.error("数据尚未初始化，请刷新页面")
+            return []
+        
+        # 使用session state中的数据
+        all_securities = st.session_state.all_securities
+        
+        # 使用UI组件渲染证券选择器
+        selected_codes = render_security_selector(all_securities)
+        
+        return selected_codes
         
     except Exception as e:
-        logger.error(f"获取股票代码时出错: {e}")
+        logger.error(f"获取证券列表时出错: {e}")
+        st.error(f"获取证券列表时出错: {str(e)}")
         return []
 
 def get_date_range_inputs() -> tuple:
@@ -207,7 +174,12 @@ def render_strategy_cards(symbols: list) -> None:
     """渲染策略卡片"""
     try:
         for symbol in symbols:
-            render_stock_strategy_card(symbol, st.session_state.portfolio)
+            # 获取股票名称
+            stock_name = None
+            if 'all_securities' in st.session_state and symbol in st.session_state.all_securities:
+                stock_name = st.session_state.all_securities[symbol].get('name', '')
+            
+            render_stock_strategy_card(symbol, st.session_state.portfolio, stock_name)
             
     except Exception as e:
         logger.error(f"渲染策略卡片时出错: {e}")
@@ -275,6 +247,34 @@ def run_backtest_and_display_results(symbols: list, start_date: datetime, end_da
         logger.error(f"运行回测时出错: {e}")
         st.error(f"运行回测时出错: {str(e)}")
 
+def initialize_data():
+    """初始化数据，在服务启动时下载股票和ETF数据"""
+    try:
+        from data_handler import DataHandler
+        
+        # 检查是否已经初始化过
+        if 'data_initialized' in st.session_state:
+            return
+        
+        with st.spinner("正在初始化数据..."):
+            data_handler = DataHandler()
+            
+            # 获取所有证券信息（包含类型）
+            all_securities = data_handler.get_all_securities()
+            if all_securities:
+                # 存储到session state中，避免重复加载
+                st.session_state.all_securities = all_securities
+            else:
+                st.error("❌ 无法加载证券数据")
+                return
+            
+            # 标记为已初始化
+            st.session_state.data_initialized = True
+            
+    except Exception as e:
+        logger.error(f"初始化数据时出错: {e}")
+        st.error(f"初始化数据时出错: {str(e)}")
+
 def main():
     """主函数"""
     try:
@@ -283,6 +283,9 @@ def main():
         
         # 应用自定义CSS
         apply_custom_css()
+        
+        # 初始化数据
+        initialize_data()
         
         # 标题和简介
         st.title("📈 股票回测系统")

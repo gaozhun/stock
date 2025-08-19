@@ -8,6 +8,9 @@ import logging
 import os
 from datetime import datetime
 
+# 全局标志，用于跟踪日志系统是否已初始化
+_logging_initialized = False
+
 def setup_logging(log_level=logging.INFO, log_file=None):
     """设置日志配置
     
@@ -15,6 +18,12 @@ def setup_logging(log_level=logging.INFO, log_file=None):
         log_level: 日志级别，默认为INFO
         log_file: 日志文件路径，如果为None则不写入文件
     """
+    global _logging_initialized
+    
+    # 如果日志系统已经初始化，直接返回
+    if _logging_initialized:
+        return logging.getLogger()
+    
     # 创建日志记录器
     logger = logging.getLogger()
     logger.setLevel(log_level)
@@ -25,7 +34,7 @@ def setup_logging(log_level=logging.INFO, log_file=None):
     
     # 创建格式化器 - 包含文件名和行号
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(funcName)s() - %(message)s',
+        '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(funcName)s() - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
@@ -55,6 +64,9 @@ def setup_logging(log_level=logging.INFO, log_file=None):
     logging.getLogger('plotly').setLevel(logging.WARNING)
     logging.getLogger('streamlit').setLevel(logging.WARNING)
     
+    # 标记日志系统已初始化
+    _logging_initialized = True
+    
     return logger
 
 def get_logger(name):
@@ -70,6 +82,12 @@ def get_logger(name):
 
 def setup_default_logging():
     """设置默认的日志配置"""
+    # 检查是否已经初始化
+    if _logging_initialized:
+        logger = get_logger(__name__)
+        logger.debug("日志系统已经初始化，跳过重复配置")
+        return
+    
     log_dir = "logs"
     log_file = os.path.join(log_dir, f"web_app_{datetime.now().strftime('%Y%m%d')}.log")
     setup_logging(log_level=logging.INFO, log_file=log_file)
@@ -81,6 +99,12 @@ def setup_default_logging():
 
 def setup_debug_logging():
     """设置调试级别的日志配置"""
+    # 检查是否已经初始化
+    if _logging_initialized:
+        logger = get_logger(__name__)
+        logger.debug("日志系统已经初始化，跳过重复配置")
+        return
+    
     log_dir = "logs"
     log_file = os.path.join(log_dir, f"web_app_debug_{datetime.now().strftime('%Y%m%d')}.log")
     setup_logging(log_level=logging.DEBUG, log_file=log_file)
@@ -92,11 +116,33 @@ def setup_debug_logging():
 
 def setup_minimal_logging():
     """设置最小化的日志配置（仅控制台输出）"""
+    # 检查是否已经初始化
+    if _logging_initialized:
+        logger = get_logger(__name__)
+        logger.debug("日志系统已经初始化，跳过重复配置")
+        return
+    
     setup_logging(log_level=logging.INFO, log_file=None)
     
     # 输出初始日志信息
     logger = get_logger(__name__)
     logger.info("最小化日志系统初始化完成（仅控制台输出）")
+
+def reset_logging():
+    """重置日志系统（用于测试或特殊情况）"""
+    global _logging_initialized
+    _logging_initialized = False
+    
+    # 清除所有处理器
+    logger = logging.getLogger()
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    logger.info("日志系统已重置")
+
+def is_logging_initialized():
+    """检查日志系统是否已初始化"""
+    return _logging_initialized
 
 def get_log_file_path():
     """获取当前日志文件路径"""

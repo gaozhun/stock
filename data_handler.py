@@ -32,10 +32,14 @@ class DataHandler:
         """
         self.cache_dir = cache_dir
         self.cache_days = DATA_SOURCE['cache_days']
+
+        self.all_securities = None
         
         # 创建缓存目录
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
+
+        self.all_securities = self.get_all_securities()
     
     def get_stock_data(self, 
                       symbol: str, 
@@ -136,20 +140,6 @@ class DataHandler:
     def _convert_to_akshare_symbol(self, symbol: str) -> str:
         """转换股票代码为AKShare格式"""
         symbol = symbol.upper().strip()
-        
-        # 美股代码映射到中国股票代码（用于演示）
-        us_to_cn_mapping = {
-            'AAPL': '000001',   # 苹果 -> 平安银行
-            'MSFT': '000002',   # 微软 -> 万科A  
-            'GOOGL': '000858',  # 谷歌 -> 五粮液
-            'AMZN': '000001',   # 亚马逊 -> 平安银行
-            'TSLA': '002594'    # 特斯拉 -> 比亚迪
-        }
-        
-        # 如果在映射中，使用映射后的代码
-        if symbol in us_to_cn_mapping:
-            print(f"    将美股代码 {symbol} 映射为中国股票 {us_to_cn_mapping[symbol]}")
-            return us_to_cn_mapping[symbol]
         
         # 如果是6位数字，直接使用
         if len(symbol) == 6 and symbol.isdigit():
@@ -436,55 +426,6 @@ class DataHandler:
         
         return data
 
-    def get_etf_list(self, category: str = None) -> Dict[str, str]:
-        """
-        获取ETF列表
-        
-        Args:
-            category: ETF分类 ('宽基指数', '行业主题', '海外市场', '债券固收')
-            
-        Returns:
-            ETF代码和名称的字典
-        """
-        from config import ETF_CONFIG
-        
-        if category is None:
-            return ETF_CONFIG['popular_etfs']
-        elif category in ETF_CONFIG['etf_categories']:
-            category_codes = ETF_CONFIG['etf_categories'][category]
-            return {code: ETF_CONFIG['popular_etfs'][code] for code in category_codes}
-        else:
-            return {}
-
-    def get_etf_info(self, etf_code: str) -> Dict:
-        """
-        获取ETF信息
-        
-        Args:
-            etf_code: ETF代码
-            
-        Returns:
-            ETF信息字典
-        """
-        from config import ETF_CONFIG
-        
-        # 从配置中获取基本信息
-        etf_name = ETF_CONFIG['popular_etfs'].get(etf_code, f'ETF_{etf_code}')
-        
-        # 判断ETF类别
-        etf_category = 'Unknown'
-        for category, codes in ETF_CONFIG['etf_categories'].items():
-            if etf_code in codes:
-                etf_category = category
-                break
-        
-        return {
-            'name': etf_name,
-            'code': etf_code,
-            'category': etf_category,
-            'type': 'ETF'
-        }
-
     def is_etf_code(self, symbol: str) -> bool:
         """
         判断是否为ETF代码
@@ -495,8 +436,15 @@ class DataHandler:
         Returns:
             是否为ETF代码
         """
-        from config import ETF_CONFIG
-        return symbol in ETF_CONFIG['popular_etfs']
+        try:
+            if self.all_securities is not None and symbol in self.all_securities:
+                return self.all_securities[symbol].get('type') == 'etf'
+            else:
+                return False
+            
+        except Exception as e:
+            print(f"检查ETF代码时出错: {str(e)}")
+            return False
 
     def get_stock_info(self, symbol: str) -> Dict:
         """
@@ -517,6 +465,150 @@ class DataHandler:
             return self._get_stock_info_akshare(symbol)
         except Exception as e:
             raise Exception(f"无法获取股票{symbol}信息: {str(e)}")
+    
+    def get_stock_list(self) -> Dict[str, str]:
+        """
+        获取A股股票列表，支持接口下载和按月缓存
+        
+        Returns:
+            股票代码和名称的字典
+        """
+        try:
+            csv_file = os.path.join(self.cache_dir, 'stock_info_a_code_name.csv')
+            
+            # 检查CSV文件是否是最新的（按月更新）
+            if os.path.exists(csv_file) and self._is_cache_valid(csv_file, days=30):
+                df = pd.read_csv(csv_file)
+                if 'code' in df.columns and 'name' in df.columns:
+                    stock_dict = {}
+                    for _, row in df.iterrows():
+                        code = str(row['code']).zfill(6)
+                        name = str(row['name'])
+                        stock_dict[code] = name
+                    
+                    print(f"从CSV文件加载了 {len(stock_dict)} 只A股股票")
+                    return stock_dict
+            
+            # 从接口下载最新数据
+            if AKSHARE_AVAILABLE:
+                print("正在从AKShare获取最新A股股票列表...")
+                stock_info = ak.stock_info_a_code_name()
+                if not stock_info.empty and 'code' in stock_info.columns and 'name' in stock_info.columns:
+                    stock_dict = {}
+                    for _, row in stock_info.iterrows():
+                        code = str(row['code']).zfill(6)
+                        name = str(row['name'])
+                        stock_dict[code] = name
+                    
+                    # 保存到CSV文件
+                    stock_info.to_csv(csv_file, index=False)
+                    print(f"从AKShare获取了 {len(stock_dict)} 只A股股票，已保存到CSV文件")
+                    return stock_dict
+            
+            print("警告: 无法获取A股股票列表")
+            return {}
+            
+        except Exception as e:
+            print(f"获取A股股票列表时出错: {str(e)}")
+            return {}
+    
+    def get_etf_list_from_csv(self) -> Dict[str, str]:
+        """
+        从CSV文件获取ETF列表，支持接口下载和按月缓存
+        
+        Returns:
+            ETF代码和名称的字典
+        """
+        try:
+            csv_file = os.path.join(self.cache_dir, 'fund_etf_spot_em.csv')
+            
+            # 检查CSV文件是否是最新的（按月更新）
+            if os.path.exists(csv_file) and self._is_cache_valid(csv_file, days=30):
+                df = pd.read_csv(csv_file)
+                if '代码' in df.columns and '名称' in df.columns:
+                    etf_dict = {}
+                    for _, row in df.iterrows():
+                        code = str(row['代码']).strip()
+                        name = str(row['名称']).strip()
+                        if code and name:  # 过滤空值
+                            etf_dict[code] = name
+                    
+                    print(f"从CSV文件加载了 {len(etf_dict)} 只ETF")
+                    return etf_dict
+                elif 'code' in df.columns and 'name' in df.columns:
+                    etf_dict = {}
+                    for _, row in df.iterrows():
+                        code = str(row['code']).strip()
+                        name = str(row['name']).strip()
+                        if code and name:  # 过滤空值
+                            etf_dict[code] = name
+                    
+                    print(f"从CSV文件加载了 {len(etf_dict)} 只ETF")
+                    return etf_dict
+            
+            # 从接口下载最新数据
+            if AKSHARE_AVAILABLE:
+                print("正在从AKShare获取最新ETF列表...")
+                try:
+                    etf_info = ak.fund_etf_spot_em()
+                    if not etf_info.empty and '代码' in etf_info.columns and '名称' in etf_info.columns:
+                        etf_dict = {}
+                        for _, row in etf_info.iterrows():
+                            code = str(row['代码']).strip()
+                            name = str(row['名称']).strip()
+                            if code and name:  # 过滤空值
+                                etf_dict[code] = name
+                        
+                        # 保存到CSV文件
+                        etf_info.to_csv(csv_file, index=False)
+                        print(f"从AKShare获取了 {len(etf_dict)} 只ETF，已保存到CSV文件")
+                        return etf_dict
+                except Exception as e:
+                    print(f"从AKShare获取ETF列表失败: {str(e)}")
+            
+            print("警告: 无法获取ETF列表")
+            return {}
+            
+        except Exception as e:
+            print(f"获取ETF列表时出错: {str(e)}")
+            return {}
+    
+    def get_all_securities(self) -> Dict[str, dict]:
+        """
+        获取所有证券列表（A股 + ETF）
+        
+        Returns:
+            证券代码和信息的字典，包含名称和类型
+        """
+        if self.all_securities is not None:
+            return self.all_securities
+        
+        print("正在获取所有证券列表...")
+        stock_dict = self.get_stock_list()
+        etf_dict = self.get_etf_list_from_csv()
+        
+        # 创建包含类型信息的证券字典
+        all_securities = {}
+        
+        # 添加A股
+        for code, name in stock_dict.items():
+            all_securities[code] = {
+                'name': name,
+                'type': 'stock',
+                'code': code
+            }
+        
+        # 添加ETF
+        for code, name in etf_dict.items():
+            all_securities[code] = {
+                'name': name,
+                'type': 'etf',
+                'code': code
+            }
+        
+        print(f"总共获取了 {len(all_securities)} 只证券（A股: {len(stock_dict)}, ETF: {len(etf_dict)}）")
+        
+        return all_securities
     
     def _get_stock_info_akshare(self, symbol: str) -> Dict:
         """使用AKShare获取股票信息"""
@@ -606,6 +698,27 @@ class DataHandler:
         data = data[~data.index.duplicated(keep='first')]
         
         return data
+    
+    def _is_cache_valid(self, file_path: str, days: int = 30) -> bool:
+        """
+        检查文件是否在有效期内
+        
+        Args:
+            file_path: 文件路径
+            days: 有效期（天数）
+            
+        Returns:
+            文件是否在有效期内
+        """
+        try:
+            if not os.path.exists(file_path):
+                return False
+            
+            file_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+            return datetime.now() - file_time < timedelta(days=days)
+            
+        except Exception:
+            return False
     
 
     def calculate_technical_indicators(self, data: pd.DataFrame) -> pd.DataFrame:

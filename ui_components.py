@@ -5,7 +5,7 @@ UI组件模块
 """
 
 import streamlit as st
-from typing import Dict, Any
+from typing import Dict, Any, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -109,17 +109,31 @@ def get_custom_css() -> str:
     </style>
     """
 
-def render_stock_card(stock_code: str) -> None:
-    """渲染股票卡片标题"""
+def render_stock_card(stock_code: str, stock_name: str = None) -> None:
+    """
+    渲染股票卡片标题
+    
+    Args:
+        stock_code: 股票代码
+        stock_name: 股票名称（可选）
+    """
     try:
+        if stock_name:
+            title = f"📊 {stock_code} - {stock_name}"
+        else:
+            title = f"📊 {stock_code}"
+        
         st.markdown(f"""
         <div class="stock-card">
-            <h3>📊 {stock_code}</h3>
+            <h3>{title}</h3>
         </div>
         """, unsafe_allow_html=True)
     except Exception as e:
         logger.error(f"渲染股票卡片时出错: {e}")
-        st.subheader(f"📊 {stock_code}")
+        if stock_name:
+            st.subheader(f"📊 {stock_code} - {stock_name}")
+        else:
+            st.subheader(f"📊 {stock_code}")
 
 def render_strategy_card(strategy_name: str, strategy_type: str, 
                         signal_type: str, params: Dict[str, Any], 
@@ -254,3 +268,87 @@ def apply_custom_css() -> None:
         st.markdown(get_custom_css(), unsafe_allow_html=True)
     except Exception as e:
         logger.error(f"应用自定义CSS时出错: {e}")
+
+def render_security_selector(securities: Dict[str, dict], 
+                           selected_codes: List[str] = None,
+                           max_display: int = 100) -> List[str]:
+    """
+    渲染证券选择器
+    
+    Args:
+        securities: 证券代码和信息的字典，包含名称和类型
+        selected_codes: 已选择的证券代码列表
+        max_display: 最大显示数量
+        
+    Returns:
+        选择的证券代码列表
+    """
+    try:
+        if not securities:
+            st.warning("没有可用的证券")
+            return []
+        
+        # 搜索框
+        search_term = st.text_input(
+            "🔍 搜索股票或ETF",
+            placeholder="输入代码或名称关键词",
+            help="支持股票代码、ETF代码或名称搜索"
+        )
+        
+        # 分类选择
+        col1, col2 = st.columns(2)
+        with col1:
+            show_stocks = st.checkbox("显示A股", value=True)
+        with col2:
+            show_etfs = st.checkbox("显示ETF", value=True)
+        
+        # 根据搜索词和分类过滤证券
+        filtered_securities = {}
+        for code, info in securities.items():
+            # 获取证券信息
+            name = info.get('name', '')
+            sec_type = info.get('type', '')
+            
+            # 检查是否匹配搜索条件
+            if search_term:
+                if not (search_term.lower() in code.lower() or search_term.lower() in name.lower()):
+                    continue
+            
+            # 根据类型过滤
+            if sec_type == 'stock' and not show_stocks:
+                continue
+            elif sec_type == 'etf' and not show_etfs:
+                continue
+            
+            filtered_securities[code] = name
+        
+        # 显示搜索结果数量
+        if search_term:
+            st.info(f"找到 {len(filtered_securities)} 个匹配的证券")
+        
+        # 多选证券
+        if filtered_securities:
+            # 限制显示数量，避免界面过于复杂
+            if len(filtered_securities) > max_display:
+                st.warning(f"显示前 {max_display} 个结果，请使用搜索功能缩小范围")
+                # 取前max_display个
+                limited_securities = dict(list(filtered_securities.items())[:max_display])
+            else:
+                limited_securities = filtered_securities
+            
+            selected_codes = st.multiselect(
+                f"选择投资标的 (共{len(filtered_securities)}只可选)",
+                options=list(limited_securities.keys()),
+                default=selected_codes or [],
+                format_func=lambda x: f"{x} - {limited_securities.get(x, '')}"
+            )
+            
+            return selected_codes
+        else:
+            st.info("请输入搜索关键词或调整显示选项")
+            return []
+        
+    except Exception as e:
+        logger.error(f"渲染证券选择器时出错: {e}")
+        st.error(f"渲染证券选择器时出错: {str(e)}")
+        return []

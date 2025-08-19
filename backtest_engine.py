@@ -13,7 +13,6 @@ warnings.filterwarnings('ignore')
 
 from data_handler import DataHandler
 from stock_strategy import Strategy, SignalType
-from config import BACKTEST_CONFIG
 from stock_strategy import Portfolio, Stock
 
 
@@ -27,10 +26,6 @@ class BacktestEngine:
         Args:
             initial_capital: 初始资金
         """
-        # self.initial_capital = initial_capital or BACKTEST_CONFIG['initial_capital']
-        # self.slippage = BACKTEST_CONFIG['slippage']
-        # self.min_trade_amount = BACKTEST_CONFIG['min_trade_amount']
-        # self.max_position_per_stock = BACKTEST_CONFIG['max_position_per_stock']
         
         # 回测结果
         self.portfolio_value = pd.Series()

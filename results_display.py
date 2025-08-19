@@ -409,20 +409,6 @@ def display_portfolio_charts(results: Dict[str, Any]) -> None:
             logger.info(f"添加对比数据后，数据框列: {list(portfolio_value_df.columns)}")
             logger.info(f"数据框形状: {portfolio_value_df.shape}")
             
-            # 显示数据预览
-            with st.expander("数据预览", expanded=False):
-                st.write("投资组合价值数据:")
-                st.dataframe(portfolio_value_df.head())
-                
-                if '买入并持有' in portfolio_value_df.columns:
-                    st.write("买入并持有数据:")
-                    st.dataframe(portfolio_value_df[['投资组合价值', '买入并持有']].head())
-                
-                benchmark_name = st.session_state.get('benchmark_name', '基准指数')
-                benchmark_columns = [col for col in portfolio_value_df.columns if benchmark_name in col]
-                if benchmark_columns:
-                    st.write("基准指数数据:")
-                    st.dataframe(portfolio_value_df[['投资组合价值'] + benchmark_columns].head())
             
             # 创建Tab页面分别显示价值变化图和回撤分析图
             tab1, tab2 = st.tabs(['价值变化', '回撤分析'])
@@ -541,7 +527,7 @@ def display_return_analysis(results: Dict[str, Any]) -> None:
 def display_strategy_comparison(results: Dict[str, Any]) -> None:
     """显示策略对比分析"""
     try:
-        st.subheader("策略对比分析")
+        st.subheader("📊 策略对比分析")
         
         # 创建对比表格
         comparison_data = create_comparison_data(results)

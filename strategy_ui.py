@@ -283,13 +283,20 @@ def render_ma_touch_params(stock_code: str, signal_type: SignalType) -> Dict[str
         logger.error(f"渲染均线触碰策略参数时出错: {e}")
         return {}
 
-def render_stock_strategy_card(stock_code: str, portfolio: Portfolio) -> None:
-    """渲染单只股票的策略卡片"""
+def render_stock_strategy_card(stock_code: str, portfolio: Portfolio, stock_name: str = None) -> None:
+    """
+    渲染单只股票的策略卡片
+    
+    Args:
+        stock_code: 股票代码
+        portfolio: 投资组合
+        stock_name: 股票名称（可选）
+    """
     try:
         from ui_components import render_stock_card, render_strategy_card
         
         # 股票卡片标题
-        render_stock_card(stock_code)
+        render_stock_card(stock_code, stock_name)
         
         # 创建两列布局
         col1, col2 = st.columns(2)

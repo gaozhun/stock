@@ -309,8 +309,20 @@ class Stock:
             # 每周信号，选择特定的交易日
             signals[data.index.weekday == trading_day] = signal_value
         elif frequency == 'monthly':
-            # 每月信号，选择特定的交易日
-            signals[data.index.day == trading_day] = signal_value
+            # 每月信号，选择每月的第N个交易日
+            # 按月份分组，选择每月的第trading_day个交易日
+            monthly_groups = data.groupby([data.index.year, data.index.month])
+            for (year, month), month_data in monthly_groups:
+                if len(month_data) > 0:
+                    # 获取该月的第trading_day个交易日（从1开始计数）
+                    if trading_day <= len(month_data):
+                        # 选择该月的第trading_day个交易日
+                        selected_date = month_data.index[trading_day - 1]
+                        signals[selected_date] = signal_value
+                    else:
+                        # 如果该月交易日数量不足，选择最后一个交易日
+                        last_date = month_data.index[-1]
+                        signals[last_date] = signal_value
 
         return signals
 
